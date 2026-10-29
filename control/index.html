@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>모션포스터 UNDER CONTROL AR</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-v1.5.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+  /* 포스터 톤(회색 벽, 검정 그림자)을 따르는 얇은 안내 */
+  :root { --ink: #0d0d0e; --wall: #c9c9c7; --text: #f2f2f0; --muted: #a3a3a0; --veil: rgba(13,13,14,.72); color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--text); overflow: hidden; touch-action: none;
+               font: 15px/1.5 "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  [hidden] { display: none !important; }
+  html.running, html.running body { background: transparent; }  /* AR: 카메라 영상(z-index -2)이 보이도록 */
+  html.web, html.web body { background: #fff; }   /* 화면 보기: 흰 벽 위에 걸린 것처럼 -> 포스터 밖 그늘·그림자가 보임 */
+  a-scene { position: fixed; inset: 0; }
+  .a-enter-vr, .a-enter-ar { display: none !important; }   /* A-Frame 기본 VR/AR 버튼 (설정 버튼과 겹침) */
+  .layer { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; pointer-events: none;
+           padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); }
+
+  #start { background: var(--ink); pointer-events: auto; }
+  #start .box { display: grid; gap: 18px; justify-items: center; text-align: center; max-width: 320px; }
+  #start .mark { display: grid; grid-template-columns: repeat(3, 34px); gap: 6px; }
+  #start .mark i { height: 30px; background: repeating-linear-gradient(var(--text) 0 4px, transparent 4px 8.5px); }
+  #start h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .01em; }
+  #start p { margin: 0; color: var(--muted); font-size: 14px; }
+  #start .btns { display: grid; gap: 10px; width: 100%; }
+  .btn { pointer-events: auto; font: inherit; font-weight: 600; border-radius: 999px; padding: 13px 30px; cursor: pointer; border: 0; }
+  .btn.primary { color: var(--ink); background: var(--text); }
+  .btn.ghost { color: var(--text); background: transparent; box-shadow: inset 0 0 0 1px rgba(242,242,240,.35); }
+  .btn:focus-visible { outline: 2px solid var(--wall); outline-offset: 3px; }
+  .btn[disabled] { opacity: .5; }
+
+  #scan .frame { width: min(68vw, 52vh); aspect-ratio: 594 / 841; position: relative; }
+  #scan .frame i { position: absolute; width: 16%; aspect-ratio: 1; border: 2px solid var(--text); opacity: .9; }
+  #scan .frame i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+  #scan .frame i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+  #scan .frame i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+  #scan .frame i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+  @media (prefers-reduced-motion: no-preference) {
+    #scan .frame { animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe { 50% { transform: scale(.96); opacity: .6; } }
+  }
+  .pill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+          z-index: 11; background: var(--veil); color: var(--text); padding: 8px 16px; border-radius: 999px;
+          font-size: 13px; white-space: nowrap; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .pill b { font-weight: 600; }
+
+  /* 각도 눈금 (?debug=1): 왼쪽 끝 = 시작(어둠), 가운데 = 밝음, 오른쪽 끝 = 끝(어둠 + 심볼) */
+  #meter { position: fixed; left: 50%; transform: translateX(-50%); top: calc(16px + env(safe-area-inset-top, 0px)); z-index: 11;
+           width: min(320px, calc(100vw - 32px)); display: grid; gap: 6px; background: var(--veil); padding: 10px 12px;
+           border-radius: 12px; font-size: 12px; color: var(--muted); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  #meter .bar { position: relative; height: 6px; border-radius: 3px;
+                background: linear-gradient(90deg, #000, #888 30%, var(--wall) 50%, #888 70%, #000); }
+  #meter .bar i { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--text); left: 50%; }
+  #meter .row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+
+  /* 설정 패널: 오른쪽 아래 조절 버튼 -> 슬라이더 목록 */
+  #gear { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); z-index: 12;
+          width: 44px; height: 44px; border-radius: 50%; border: 0; padding: 0; background: var(--veil); color: var(--text); cursor: pointer;
+          display: grid; place-items: center; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  #gear svg { width: 22px; height: 22px; }
+  #gear:focus-visible, #panel button:focus-visible { outline: 2px solid var(--wall); outline-offset: 2px; }
+  #panel { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(76px + env(safe-area-inset-bottom, 0px)); z-index: 12;
+           width: min(320px, calc(100vw - 32px)); max-height: calc(100dvh - 120px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y;
+           box-sizing: border-box; background: rgba(13,13,14,.88); color: var(--text); border-radius: 14px; padding: 14px 16px 16px; font-size: 13px;
+           backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  #panel h2 { margin: 0; font-size: 15px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  #panel .close { background: none; border: 0; color: var(--muted); font: inherit; font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+  #panel h3 { margin: 18px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+  #panel label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 10px 0 0; }
+  #panel label span + span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #panel input[type=range] { grid-column: 1 / -1; width: 100%; margin: 4px 0 0; accent-color: var(--text); }
+  #panel .foot { display: flex; gap: 8px; margin-top: 18px; }
+  #panel .foot button { flex: 1; font: inherit; font-weight: 600; border-radius: 999px; padding: 9px 12px; cursor: pointer; border: 0; }
+  #panel .foot .reset { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px rgba(242,242,240,.35); }
+  #panel .foot .copy { background: var(--text); color: var(--ink); }
+  #panel .note { margin: 10px 0 0; color: var(--muted); font-size: 12px; word-break: break-all; }
+  #panel .note:empty { display: none; }
+
+  #err { background: var(--ink); pointer-events: auto; text-align: center; }
+  #err p { max-width: 300px; margin: 0; color: var(--muted); }
+  #err strong { display: block; color: var(--text); margin-bottom: 8px; font-size: 16px; }
+</style>
+</head>
+<body>
+
+<div class="layer" id="start">
+  <div class="box">
+    <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
+    <h1>PROCESS FACTORY AUTOMATION</h1>
+    <p id="intro">빛은 늘 조금씩 흔들립니다. 포스터 정면에 정확히 맞춰 서면 빛이 멈추고, 모든 것이 통제된 한 순간이 옵니다.</p>
+    <div class="btns">
+      <button class="btn primary" id="goAR" type="button" disabled>불러오는 중…</button>
+      <button class="btn ghost" id="goWeb" type="button" disabled>화면으로 보기</button>
+    </div>
+  </div>
+</div>
+
+<div class="layer" id="scan" hidden>
+  <div class="frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+</div>
+<div class="pill" id="pill" hidden>포스터 전체가 화면에 들어오게 비춰 주세요</div>
+
+<div id="meter" hidden>
+  <div class="row"><span>왼쪽·위 · 시작</span><span id="meterVal">0°</span><span>오른쪽·아래 · 끝</span></div>
+  <div class="bar"><i id="meterKnob"></i></div>
+</div>
+
+<button id="gear" type="button" aria-label="설정 열기" aria-expanded="false" aria-controls="panel" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+    <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>
+  </svg>
+</button>
+<div id="panel" role="dialog" aria-label="설정" hidden>
+  <h2>설정 <button class="close" type="button" aria-label="설정 닫기">×</button></h2>
+  <div id="panelBody"></div>
+  <div class="foot"><button class="reset" type="button">기본값</button><button class="copy" type="button">링크 복사</button></div>
+  <p class="note" id="panelNote" aria-live="polite"></p>
+</div>
+
+<div class="layer" id="err" hidden>
+  <p><strong>카메라를 열 수 없습니다</strong><span id="errMsg">브라우저 설정에서 이 페이지의 카메라 권한을 허용한 뒤 새로고침해 주세요.</span></p>
+</div>
+
+<a-scene id="scene"
+  mindar-image="imageTargetSrc: targets.mind; autoStart: false; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.0005; filterBeta: 300; warmupTolerance: 3; missTolerance: 8"
+  renderer="colorManagement: true; physicallyCorrectLights: false; antialias: true"
+  vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" embedded>
+  <a-camera id="cam" position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
+  <a-entity id="target" mindar-image-target="targetIndex: 0">
+    <!-- 포스터 폭 = 1, 높이 = 3000/2120 (A1). 판은 사방 0.06씩 더 커서 어두울 때 그늘이 벽으로 번진다.
+         모션은 아래 셰이더가 포스터 이미지로 매 프레임 그린다 -->
+    <a-plane id="motionPlane" width="1.12" height="1.5351" position="0 0 0"></a-plane>
+  </a-entity>
+</a-scene>
+
+<!-- 모션 셰이더: After Effects 확정 모션(Poster_Fadeout_C15_고해상도)의 레이어를 한 장면으로 계산한다.
+     좌표 p = 포스터 위 위치 (x: 왼->오 0~1, y: 위->아래 0~1). 길이는 포스터 폭 기준(W 단위). -->
+<script id="motionFrag" type="x-shader/x-fragment">
+  precision highp float;
+  uniform sampler2D uPoster, uSymbol;
+  uniform vec2 uTexSize;          // 2120, 3000
+  uniform float uA;               // 높이/폭 = 1.4151
+  uniform vec4 uLight;            // 빛 타원 중심, 반지름 (지나가는 방향 길이 / 그 수직 길이 대비)
+  uniform vec2 uLight2;           // 타원 경계 부드러움, 하이라이트 반지름 (W 단위)
+  uniform vec2 uSweep;            // 빛·어둠이 지나가는 방향 (시작 쪽 -> 끝 쪽). 좌우 = (1,0), 위아래 = (0,1)
+  uniform float uStretch, uSoft, uDir;   // 그림자 길이 배율, 오른쪽으로 커지는 블러, 방향 블러 (포스터 높이 대비)
+  uniform float uShear, uStretchMul;     // 보는 방향에 따른 그림자 기울기 (위에서 보면 +: 아래로 기욺), 비켜설수록 길어지는 배율
+  uniform float uOcc, uSymEdge;   // 오른쪽에서 들어오는 가림 띠 위치 (심볼용은 0.3초 늦음)
+  uniform float uLevel;           // 마지막 암전 (1 -> 0)
+  uniform float uSymA, uTailA, uSymScale;
+  uniform float uAmbGain, uOpacity;
+  uniform float uSettle;          // 빛이 들어오는 동안 1 -> 0: 빛이 막 닿은 곳의 그림자가 길고 흐리다가 제자리로
+  uniform float uIntensity;       // 빛 세기 (들어오며 조금씩 차오름 + 아주 느린 숨쉬기)
+  uniform vec2 uDrift;            // 광원의 아주 작은 흔들림 (가만히 있어도 살아 있게)
+  uniform float uWarm;            // 빛 경계의 따뜻한 기운 (0 = 끔)
+  uniform float uM;               // 판이 포스터보다 사방으로 큰 폭 (W 단위). 바깥은 어두울 때만 벽으로 번지는 그늘
+  uniform float uDrop, uTrail;    // 떠 있는 그림자 진하기, 문구 꼬리 최대 길이 (설정 패널)
+  uniform float uLock, uGlint, uEmph;   // UNDER CONTROL: 정면 고정 정도(0~1), 지나가는 빛 줄기 위치(높이), 강조 세기
+  varying vec2 vUv;
+
+  const float X0 = 0.09;          // 왼쪽 세로 텍스트 열 경계 = 그림자가 늘어나는 기준선
+  const float BAND = 1.5;         // 가림 띠 경계 폭 (영상 실측: 포스터 폭의 1.5배에 걸쳐 고르게 번짐)
+  const float AMB = 0.2;          // 가려진 벽 톤 (영상 실측 밝기 48~50 / 255, 거의 평평)
+
+  float band(float edge, float x) { return clamp((edge - (1.0 - x)) / BAND + 0.5, 0.0, 1.0); }
+
+  float lodAuto(vec2 uv) {
+    vec2 t = uv * uTexSize;
+    return log2(max(max(length(dFdx(t)), length(dFdy(t))), 1.0));
+  }
+  vec3 tex(vec2 p, float lod) { return textureLod(uPoster, vec2(p.x, 1.0 - p.y), lod).rgb; }
+
+  // 인쇄본 왼쪽 아래 로고 자리는 바로 위 빈 종이로 덮는다 (영상과 같게)
+  vec3 poster(vec2 p, float lod) {
+    vec2 lo = vec2(60.0, 2872.0) / uTexSize, hi = vec2(440.0, 2958.0) / uTexSize, f = vec2(14.0) / uTexSize;
+    vec2 m2 = smoothstep(lo - f, lo + f, p) * (1.0 - smoothstep(hi - f, hi + f, p));
+    float m = m2.x * m2.y;
+    vec3 c = tex(p, lod);
+    return m > 0.0 ? mix(c, tex(p - vec2(0.0, 100.0 / uTexSize.y), lod), m) : c;
+  }
+
+  // 지나가는 방향으로 본 위치 (0 = 시작 쪽 가장자리, 1 = 끝 쪽 가장자리)
+  float sweepU(vec2 p) {
+    float L = uSweep.x + uA * uSweep.y;
+    return dot(vec2(p.x - 0.5, (p.y - 0.5) * uA), uSweep) / L + 0.5;
+  }
+  // 어둠 경계가 곧은 선이 아니라 부드럽게 일렁이도록. 경계가 움직이면 결도 같이 흐른다
+  float wobble(float y, float edge) {
+    return 0.035 * sin(y * 7.0 + edge * 5.0) + 0.018 * sin(y * 17.0 - edge * 3.0 + 1.3);
+  }
+  float hash(float n) { return fract(sin(n * 91.345) * 47453.21); }
+  // 문구 잉크 (종이보다 어두운 정도). 왼쪽 문구 열 안에서만
+  float inkAt(vec2 s, float lod) {
+    if (s.x < 0.0 || s.x > X0 || s.y < 0.0 || s.y > 1.0) return 0.0;
+    float c = tex(s, lod).r, paper = tex(s, log2(0.02 * uTexSize.y)).r;
+    return clamp((paper - c) / max(paper, 0.05) * 1.4, 0.0, 1.0);
+  }
+  // 그림자처럼 끌리며 사라지는 문구: 보는 방향(빛 반대쪽)으로 꼬리가 길어지고, 길어질수록 잉크가 옅어지고 번짐
+  float textTrail(vec2 p, float q, float lod) {
+    vec2 off = uSweep * (uTrail * q) / vec2(1.0, uA);
+    float acc = 0.0, wsum = 0.0;
+    for (int i = 0; i < 8; i++) {
+      float f = float(i) / 7.0, w = 1.0 - 0.7 * f;
+      acc += inkAt(p - off * f, lod + 1.5 * q * f) * w;
+      wsum += w;
+    }
+    return acc / wsum * (1.0 - 0.35 * q);
+  }
+  float textSink(float id, float cell, float x) {
+    float uc = sweepU(vec2(x, (id + 0.5) * cell));
+    float q = clamp((uOcc - 0.15 - 0.2 * hash(id) - (1.0 - uc)) / 0.45 + 0.5, 0.0, 1.0);
+    return q * q * (3.0 - 2.0 * q);
+  }
+
+  void main() {
+    vec2 pw = vec2(vUv.x * (1.0 + 2.0 * uM) - uM, (1.0 - vUv.y) * (uA + 2.0 * uM) - uM);
+    float outside = max(max(-pw.x, pw.x - 1.0), max(-pw.y, pw.y - uA));   // > 0 이면 포스터 바깥 (W 단위 거리)
+    vec2 p = clamp(vec2(pw.x, pw.y / uA), 0.0, 1.0);
+    vec2 P = vec2(p.x, p.y * uA);
+    float base = lodAuto(p);
+
+    // 지나가는 방향 좌표계: S.x = 시작 쪽 가장자리부터의 거리 (0~L), S.y = 그 수직 방향 (0~Lp). 좌우일 때 S = P
+    vec2 Dp = vec2(-uSweep.y, uSweep.x);
+    float L = uSweep.x + uA * uSweep.y, Lp = abs(Dp.x) + uA * abs(Dp.y);
+    vec2 Pc = P - vec2(0.5, 0.5 * uA);
+    vec2 S = vec2(dot(Pc, uSweep) + 0.5 * L, dot(Pc, Dp) + 0.5 * Lp);
+    float u = S.x / L;
+    bool inCol = p.x < X0;
+    bool inText = inCol || (p.y > 0.955 && p.x < 0.20);
+
+    // 오른쪽(또는 아래)에서 오는 어둠의 정도. 경계는 일렁임
+    float occW = band(uOcc, u + wobble(S.y, uOcc));
+
+    // 빛(직사광): 타원 안쪽 + 그 앞으로 길게 번지는 옅은 빛. 벽에 실제로 빛이 닿을 때처럼 경계가 한 줄로 끊기지 않게
+    vec2 c = uLight.xy * vec2(L, Lp) + uDrift * L;
+    vec2 d = S - c;
+    float k = length(d / (uLight.zw * vec2(L, Lp)));
+    float dist = length(d) * (1.0 - 1.0 / max(k, 1e-4));
+    float F = uLight2.x * L;
+    float core = 1.0 - smoothstep(-F * 0.5, F * 0.5, dist);
+    float glow = 1.0 - smoothstep(-F * 0.3, F * 1.8, dist);
+    float halo = (1.0 - core) * glow * 0.12;          // 빛이 오기 전 벽 가장자리가 희미하게 밝아지는 정도
+    float m = core + halo;
+
+    // 문구(왼쪽 세로 글자열): 어둠이 오는 순서대로 글자 몇 개 높이(4.5%)씩, 벽보다 조금 늦게
+    //   큰 글자 그림자처럼 보는 방향으로 꼬리가 끌리며 옅어져 사라짐 (좌우로 보면 오른쪽으로, 위아래로 보면 아래로 끌림)
+    //   qT = 사라지는 정도 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
+    //   꼬리는 문구 열 밖 벽까지 이어지므로 열 오른쪽 일부도 함께 계산
+    float qT = 0.0, qC = 0.0;
+    bool nearCol = p.x < X0 + uTrail * uSweep.x + 1e-3;
+    if (nearCol) {
+      float cell = 0.045, id = floor(p.y / cell), f = fract(p.y / cell), xc = min(p.x, 0.045);
+      float qa = textSink(id - 1.0, cell, xc), qb = textSink(id, cell, xc), qc = textSink(id + 1.0, cell, xc);
+      qT = mix(qb, (qb + qc) * 0.5, smoothstep(0.7, 1.0, f));
+      qT = mix(qT, (qa + qb) * 0.5, smoothstep(0.3, 0.0, f));
+      qC = clamp((uOcc - 0.25 - (1.0 - sweepU(p))) / 0.6 + 0.5, 0.0, 1.0);
+    }
+
+    // 1) 포스터: 문구는 제자리, 그림자는 기준선에서 늘어나며 번짐
+    vec3 col;
+    if (inText) {
+      col = poster(p, base);
+      if (inCol && qT > 0.001) {
+        vec3 paper = poster(p, base + 5.0);
+        col = mix(col, paper * (1.0 - textTrail(p, qT, base)), smoothstep(0.0, 0.15, qT));
+      }
+    } else {
+      float map = clamp((p.x - X0) / (1.0 - X0), 0.0, 1.0);
+      // 어둠 바로 앞: 그림자가 먼저 길게 끌려가며 번짐
+      float lead = clamp((uOcc + 0.3 - (1.0 - u)) / 0.6 + 0.5, 0.0, 1.0);   // 어둠보다 조금 앞서 가는 좁은 띠
+      float pre = (1.0 - smoothstep(0.25, 0.75, occW)) * smoothstep(0.0, 0.6, lead);
+      // 빛이 막 닿은 곳: 낮게 스치는 빛이라 그림자가 길고 흐림 -> 빛이 차오르면 짧아지며 또렷하게 자리 잡음
+      float settle = uSettle * (1.0 - smoothstep(0.15, 0.9, m));
+      float s = uStretch * uStretchMul * (1.0 + 0.45 * pre + 0.35 * settle);
+      float xs = X0 + (p.x - X0) / s;
+      // 그림자 기울기: 기준선에서 멀어질수록 위/아래로 (AE Corner Pin 기울기와 같은 식)
+      vec2 q = vec2(xs, p.y - uShear * (xs - X0) / uA);
+      float lod = max(base, log2(1.0 + (uSoft * map + 0.012 * pre + 0.01 * settle) * uTexSize.y * 0.7));
+      vec2 dir = normalize(vec2(1.0, uShear / uA));
+      float spread = (uDir + 0.03 * pre + 0.02 * settle) * uA;   // 방향 블러 길이 (그림자 방향, W 단위)
+      col = vec3(0.0);
+      for (int i = 0; i < 7; i++) {
+        vec2 o = dir * (float(i) / 6.0 - 0.5) * spread;
+        col += poster(vec2(max(q.x + o.x, X0), q.y + o.y), lod);
+      }
+      col /= 7.0;
+    }
+
+    // 0) UNDER CONTROL: 정면에 정확히 맞춰 서면 이 문구만 또렷해지고, 빛 한 줄기가 글자를 따라 지나감
+    //    (문구 위치 실측: 포스터 폭 3.5~7%, 높이 0.5~14% = "UNDER CONTROL.")
+    if (uLock > 0.001 && inCol) {
+      float inR = step(0.035, p.x) * step(p.x, 0.07) * smoothstep(0.005, 0.015, p.y) * (1.0 - smoothstep(0.13, 0.14, p.y));
+      if (inR > 0.0) {
+        float paperT = tex(p, log2(0.02 * uTexSize.y)).r;
+        float ink = clamp((paperT - col.r) / max(paperT, 0.05), 0.0, 1.0);
+        col = mix(col, vec3(paperT) * (1.0 - min(1.0, ink * 1.7)), inR * uLock * uEmph);
+        float gb = exp(-pow((p.y - uGlint) / 0.016, 2.0));
+        col += vec3(0.11, 0.105, 0.095) * gb * inR * (1.0 - ink) * uEmph;
+      }
+    }
+
+    // 1-0) 문구 꼬리가 열 밖 벽으로 이어지는 부분
+    if (!inText && nearCol && qT > 0.001) col *= 1.0 - 0.9 * textTrail(p, qT, base);
+
+    // 1-1) 빛이 약한 곳은 그림자 대비도 약함: 그림자가 빛과 함께 또렷해짐
+    float wallTone = tex(p, log2(0.02 * uTexSize.y)).r;
+    col = mix(vec3(wallTone), col, 0.3 + 0.7 * smoothstep(0.05, 0.75, m));
+
+    // 2) 광원 쪽 하이라이트 (스크린 30%)
+    float ramp = 1.0 - clamp(length(S - c) / (uLight2.y * L), 0.0, 1.0);
+    col = 1.0 - (1.0 - col) * (1.0 - 0.3 * ramp);
+
+    // 2-1) 어둠 경계의 반그림자: 닿기 직전 그림자 대비가 먼저 풀리며 옅은 회색 막이 낌
+    float pen = smoothstep(0.02, 0.25, occW) * (1.0 - smoothstep(0.35, 0.75, occW));
+    if (pen > 0.0 && !inCol) {
+      float hz = tex(p, log2(0.012 * uTexSize.y)).r;
+      col = mix(col, vec3(hz * 0.8 + 0.08), pen * 0.55);
+    }
+
+    // 3) 가림 띠: 직사광이 가려지고 환경광만 받는 벽 (그림자 톤이 벽 전체로 퍼짐)
+    float occ = inCol ? max(qC, occW * 0.4) : occW;
+    if (occ > 0.0) {
+      vec3 amb;
+      if (inCol) {
+        amb = col * 0.55;                           // 문구는 번진 채 종이 톤으로 가라앉음 (영상 실측 0.55)
+      } else {
+        // 그림자 톤이 벽 전체로 퍼진 평평한 회색 + 가로 그림자 결이 아주 희미하게
+        float l = log2(0.03 * uTexSize.y);
+        float r = 0.02;
+        float s = (tex(p, l).r * 2.0 + tex(p + vec2(r, 0.0), l).r + tex(p - vec2(r, 0.0), l).r) * 0.25;
+        amb = vec3(AMB * (0.85 + 0.3 * s)) * uAmbGain;
+      }
+      col = mix(col, amb, occ);
+    }
+
+    // 4) 빛이 닿은 만큼만 보임. 빛 세기는 선형광에 가깝게 섞어 어둑한 부분이 뚝 끊기지 않게
+    float lightF = (pow(core, 0.6) + halo) * uIntensity;
+    col *= lightF;
+    col *= mix(vec3(1.0), vec3(1.06, 1.0, 0.9), 4.0 * m * (1.0 - m) * uWarm);   // 빛 경계만 아주 살짝 따뜻하게
+
+    // 5) 마지막 암전
+    col *= uLevel;
+
+    // 포스터 밖: 포스터가 어두운 만큼만 벽 쪽으로 옅은 그늘이 번짐 (밝을 땐 투명 -> 실제 벽이 그대로 보임)
+    if (outside > 0.0) {
+      float lit = clamp(lightF * uLevel * (1.0 - 0.75 * occ), 0.0, 1.0);
+      float spill = (1.0 - lit) * (1.0 - smoothstep(0.0, uM, outside)) * 0.8;
+      // 빛을 받는 동안 포스터가 벽에서 살짝 떠 있는 것처럼: 빛이 오는 반대쪽 벽에 옅고 부드러운 그림자
+      vec2 sq = pw - uSweep * 0.022;
+      float sd = max(max(-sq.x, sq.x - 1.0), max(-sq.y, sq.y - uA));
+      float dropShadow = (1.0 - smoothstep(-0.012, 0.028, sd)) * lit * uDrop;
+      gl_FragColor = vec4(0.0, 0.0, 0.0, max(spill, dropShadow) * uOpacity);
+      return;
+    }
+
+    // 6) 가운데 심볼 (암전 위에 남음): 가림 띠를 따라 오른쪽부터 드러나고, 다음 바퀴 시작에 천천히 사라짐
+    vec2 sz = vec2(0.28, 0.28 * 66.0 / 246.0) * uSymScale;
+    vec2 su = (P - vec2(0.5, 0.5 * uA)) / sz + 0.5;
+    if (su.x > 0.0 && su.x < 1.0 && su.y > 0.0 && su.y < 1.0) {
+      float a = texture(uSymbol, vec2(su.x, 1.0 - su.y)).a;
+      float sm = band(uSymEdge, u);
+      col = mix(col, vec3(1.0), a * clamp(uSymA * sm + uTailA, 0.0, 1.0));
+    }
+
+    gl_FragColor = vec4(col, uOpacity);
+  }
+</script>
+<script id="motionVert" type="x-shader/x-vertex">
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+</script>
+
+<!-- 빛 속 먼지: 포스터 앞 공간(포스터 폭의 1.5~32%)에 떠 있는 먼지. 포스터 위 같은 자리에 빛이 닿을 때만 은은하게 반짝인다 -->
+<script id="dustVert" type="x-shader/x-vertex">
+  attribute float aSeed;
+  uniform float uTime, uA, uOcc, uLevel, uIntensity, uOpacity, uPx;
+  uniform float uDustGain, uDustSize;   // 먼지 밝기, 크기 배율 (설정 패널)
+  uniform vec4 uLight;
+  uniform vec2 uLight2, uSweep, uDrift, uStir;
+  varying float vA;
+  void main() {
+    vec3 p = position;
+    float s = aSeed, t = uTime;
+    // 공기 중에서 아주 느리게 맴돎
+    p.x += 0.03 * sin(t * (0.11 + 0.07 * s) + s * 40.0);
+    p.y += 0.035 * sin(t * (0.09 + 0.05 * fract(s * 7.0)) + s * 17.0);
+    p.z += 0.015 * sin(t * 0.13 + s * 9.0);
+    // 휴대폰을 빨리 움직이면 공기가 흔들리듯 살짝 휘날림 (앞쪽 먼지일수록 크게)
+    p.xy += uStir * (0.4 + 0.6 * fract(s * 3.7)) * (0.5 + p.z * 3.0);
+
+    // 이 먼지 바로 뒤 포스터 지점의 빛 (모션 셰이더와 같은 계산)
+    vec2 P = vec2(p.x + 0.5, 0.5 * uA - p.y);
+    vec2 Dp = vec2(-uSweep.y, uSweep.x);
+    float L = uSweep.x + uA * uSweep.y, Lp = abs(Dp.x) + uA * abs(Dp.y);
+    vec2 S = vec2(dot(P - vec2(0.5, 0.5 * uA), uSweep) + 0.5 * L, dot(P - vec2(0.5, 0.5 * uA), Dp) + 0.5 * Lp);
+    vec2 c = uLight.xy * vec2(L, Lp) + uDrift * L;
+    vec2 d = S - c;
+    float k = length(d / (uLight.zw * vec2(L, Lp)));
+    float F = uLight2.x * L;
+    float core = 1.0 - smoothstep(-F * 0.5, F * 0.5, length(d) * (1.0 - 1.0 / max(k, 1e-4)));
+    float occ = clamp((uOcc - (1.0 - S.x / L)) / 1.5 + 0.5, 0.0, 1.0);
+    float hot = 1.0 - clamp(length(d) / (uLight2.y * L), 0.0, 1.0);
+    float lit = core * (0.5 + 0.5 * hot) * (1.0 - occ) * uLevel * uIntensity;
+    // 먼지가 돌면서 빛을 받았다 놓쳤다 함
+    float tw = 0.5 + 0.5 * sin(t * (0.7 + 1.9 * fract(s * 11.0)) + s * 60.0);
+    float edge = smoothstep(0.0, 0.04, min(min(P.x, 1.0 - P.x), min(P.y, uA - P.y)));
+    vA = lit * (0.2 + 0.8 * tw * tw) * edge * uOpacity * uDustGain;
+
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_PointSize = max(1.5, (0.003 + 0.005 * fract(s * 5.3)) * uDustSize * uPx / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }
+</script>
+<script id="dustFrag" type="x-shader/x-fragment">
+  precision highp float;
+  varying float vA;
+  void main() {
+    float a = smoothstep(0.5, 0.05, length(gl_PointCoord - 0.5)) * vA * 0.75;
+    gl_FragColor = vec4(1.0, 0.97, 0.9, a);       // 더하기 합성: 빛을 받은 먼지만 밝게 보임
+  }
+</script>
+
+<script>
+  // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽·위 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽·아래 끝 = 끝(어둠 + 심볼)
+  // 빛과 어둠은 보는 쪽에서 들어온다: 좌우로 비켜서면 가로로, 위아래로 비켜서면 세로로 지나감
+  // 조절값은 아래 SETTINGS 한 곳에 모여 있고, 화면 오른쪽 아래 톱니바퀴 패널에서 바로 바꿀 수 있다.
+  // 바꾼 값은 이 기기에 저장되고, '링크 복사'로 같은 값이 담긴 주소를 팀원에게 보낼 수 있다 (?max=25&dust=1.5 처럼).
+  // 그 밖의 주소 옵션: ?flip=1 (좌우 반대) / ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
+  const q = new URLSearchParams(location.search);
+  const pct = (v) => Math.round(v * 100) + '%', deg = (v) => v + '°', times = (v) => '×' + (+v).toFixed(1);
+  const SETTINGS = [
+    { group: '보기' },
+    { key: 'size', label: '포스터 크기 (화면 보기)', min: 0.5, max: 1.6, step: 0.05, def: 1, fmt: pct },
+    { key: 'arFit', label: '포스터 겹침 크기 (AR)', min: 0.9, max: 1.1, step: 0.005, def: 1, fmt: (v) => (v * 100).toFixed(1) + '%' },
+    { key: 'tilt', label: '기울어 보이는 정도 (화면 보기)', min: 0, max: 0.6, step: 0.05, def: 0.2, fmt: pct },
+    { group: '각도' },
+    { key: 'max', label: '좌우 끝 각도', min: 8, max: 45, step: 1, def: 22, fmt: deg },
+    { key: 'vmax', label: '위아래 끝 각도', min: 8, max: 45, step: 1, def: 18, fmt: deg },
+    { group: '속도' },
+    { key: 'follow', label: '장면이 따라오는 속도', min: 1, max: 15, step: 0.5, def: 6, fmt: times },
+    { key: 'speed', label: '장면 최대 속도', min: 0.5, max: 10, step: 0.5, def: 4, fmt: (v) => v + '초/초' },
+    { key: 'react', label: '각도 반응 (낮을수록 흔들림 적음)', min: 2, max: 20, step: 1, def: 8, fmt: times },
+    { group: '빛' },
+    { key: 'breath', label: '빛 숨쉬기 세기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'breathSpeed', label: '빛 숨쉬기 속도', min: 0.2, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'warm', label: '빛 경계 따뜻함', min: 0, max: 1.5, step: 0.05, def: 0.6, fmt: times },
+    { group: '먼지' },
+    { key: 'dust', label: '먼지 밝기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'dustSize', label: '먼지 크기', min: 0.3, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'dustSpeed', label: '먼지 떠다니는 속도', min: 0, max: 4, step: 0.1, def: 1, fmt: times },
+    { key: 'stir', label: '움직일 때 휘날림', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { group: 'UNDER CONTROL' },
+    { key: 'lockDeg', label: '정면으로 인정하는 범위', min: 1, max: 8, step: 0.5, def: 3, fmt: (v) => '±' + v + '°' },
+    { key: 'holdTime', label: '머물러야 하는 시간', min: 0, max: 2, step: 0.05, def: 0.4, fmt: (v) => v.toFixed(2) + '초' },
+    { key: 'emph', label: '문구 강조 세기', min: 0, max: 1, step: 0.05, def: 0.7, fmt: pct },
+    { group: '그림자 · 문구' },
+    { key: 'shear', label: '그림자 기울기 (위아래로 볼 때)', min: 0, max: 0.8, step: 0.05, def: 0.35, fmt: times },
+    { key: 'drop', label: '떠 있는 그림자 진하기', min: 0, max: 1, step: 0.02, def: 0.32, fmt: pct },
+    { key: 'trail', label: '문구 꼬리 길이', min: 0, max: 0.4, step: 0.01, def: 0.16, fmt: pct },
+  ].map((s) => s.key ? { ...s, fmt: s.fmt || String } : s);
+  const STORE = 'pfa-motion-ar-control-settings';   // 원본과 같은 github.io 주소라 저장 이름을 따로 씀
+  const cfg = {};
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) {}
+  for (const s of SETTINGS) if (s.key) {                // 주소 > 이 기기에 저장된 값 > 기본값
+    const v = q.has(s.key) ? +q.get(s.key) : saved[s.key];
+    cfg[s.key] = Number.isFinite(v) ? Math.min(s.max, Math.max(s.min, v)) : s.def;
+  }
+
+  const FLIP = q.get('flip') === '1';
+  const DEBUG = q.get('debug') === '1';
+  const FIXED_T = q.has('t') ? +q.get('t') : null;
+  const T_LEFT = 0.6, T_FRONT = 4.0, T_RIGHT = 7.6;
+
+  // ---- AE 키프레임 (시간, 값, 나가는/들어오는 영향력 %) 그대로 ----
+  function bezier(x1, x2) {                       // cubic-bezier(x1, 0, x2, 1)
+    return (u) => {
+      let s = u;
+      for (let i = 0; i < 8; i++) {
+        const x = 3 * (1 - s) * (1 - s) * s * x1 + 3 * (1 - s) * s * s * x2 + s * s * s - u;
+        const dx = 3 * (1 - s) * (1 - s) * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2);
+        if (Math.abs(dx) < 1e-6) break;
+        s = Math.min(1, Math.max(0, s - x / dx));
+      }
+      return 3 * (1 - s) * s * s + s * s * s;
+    };
+  }
+  function key(t0, v0, t1, v1, outInf, inInf) {
+    const e = bezier(outInf / 100, 1 - inInf / 100);
+    return (t) => t <= t0 ? v0 : t >= t1 ? v1 : v0 + (v1 - v0) * e((t - t0) / (t1 - t0));
+  }
+  function points(pts) {                          // 실측 점 사이를 부드럽게 잇기
+    return (t) => {
+      if (t <= pts[0][0]) return pts[0][1];
+      for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) {
+        const [t0, v0] = pts[i - 1], [t1, v1] = pts[i], u = (t - t0) / (t1 - t0);
+        return v0 + (v1 - v0) * u * u * (3 - 2 * u);
+      }
+      return pts[pts.length - 1][1];
+    };
+  }
+  const A = 3000 / 2120;
+  const K = {
+    // 빛 타원: 0.3초 왼쪽 바깥의 작은 점 -> 4초 포스터 전체 (이후 그대로)
+    cx: key(0.3, -0.35, 4.0, -0.24, 30, 75),
+    rx: key(0.3, 0.05, 4.0, 1.62, 30, 75),
+    ry: key(0.3, 0.30, 4.0, 1.30, 30, 75),        // 지나가는 방향의 수직 길이 대비
+    fe: key(0.3, 0.3, 4.0, 0.7, 30, 75),
+    hot: key(0.3, 0.05, 4.0, 1.2, 30, 75),
+    stretch: key(0.0, 1.0, 7.7, 1.7, 75, 25),
+    soft: key(3.0, 0, 7.7, 0.02, 75, 25),
+    dir: key(3.0, 0, 7.7, 0.035, 75, 25),
+    // 가림 띠: AE 키(4.9~6.9초)는 이후 수정본에서 바뀌어서, 확정 영상의 열별 밝기로 맞춘 값
+    occ: points([[5.6, -0.75], [5.9, 0.5], [6.1, 1.05], [6.4, 1.75]]),
+    level: points([[6.3, 1], [6.5, 0.96], [6.7, 0.81], [6.9, 0.58], [7.2, 0.25], [7.5, 0.02], [7.6, 0]]),   // 마지막 암전 (영상 실측)
+    symIn: key(5.85, 0, 6.15, 0.15, 50, 50),
+    symTail: key(0.0, 0.15, 1.0, 0, 33, 50),
+    symScale: key(5.85, 1, 7.3, 1.04, 33, 33),
+    // 빛이 들어오는 동안: 막 닿은 곳의 그림자가 길고 흐리다가 3초쯤 제자리로 / 빛 세기도 82% -> 100%로 차오름
+    settle: key(0.6, 1, 3.2, 0, 33, 60),
+    intensity: key(0.3, 0.82, 3.0, 1, 40, 60),
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const scene = $('scene'), plane = $('motionPlane'), target = $('target');
+  const goAR = $('goAR'), goWeb = $('goWeb'), start = $('start'), scan = $('scan'), pill = $('pill'), err = $('err');
+  const THREE = AFRAME.THREE;
+  let mat = null, mode = null, tracking = false, shownT = T_LEFT, ah = -cfg.max, av = 0, fadeRaf = 0;
+
+  function setTime(t) {
+    if (!mat) return;
+    const u = mat.uniforms;
+    u.uLight.value.set(K.cx(t), 0.5, K.rx(t), K.ry(t));
+    u.uLight2.value.set(K.fe(t), K.hot(t));
+    u.uStretch.value = K.stretch(t); u.uSoft.value = K.soft(t); u.uDir.value = K.dir(t);
+    u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
+    u.uLevel.value = K.level(t);
+    u.uSymA.value = K.symIn(t); u.uTailA.value = t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
+    u.uSettle.value = K.settle(t); u.uIntensity.value = K.intensity(t);
+  }
+
+  function buildMaterial() {
+    return new Promise((resolve) => {
+      const loader = new THREE.TextureLoader();
+      let n = 0;
+      const done = () => { if (++n === 2) resolve(); };
+      const poster = loader.load('poster.jpg', done), symbol = loader.load('symbol.png', done);
+      poster.minFilter = THREE.LinearMipmapLinearFilter; poster.generateMipmaps = true; poster.anisotropy = 4;
+      mat = new THREE.ShaderMaterial({
+        vertexShader: $('motionVert').textContent,
+        fragmentShader: $('motionFrag').textContent,
+        transparent: true,
+        uniforms: {
+          uPoster: { value: poster }, uSymbol: { value: symbol },
+          uTexSize: { value: new THREE.Vector2(2120, 3000) }, uA: { value: A },
+          uLight: { value: new THREE.Vector4() }, uLight2: { value: new THREE.Vector2() }, uSweep: { value: new THREE.Vector2(1, 0) },
+          uStretch: { value: 1 }, uSoft: { value: 0 }, uDir: { value: 0 }, uShear: { value: 0 }, uStretchMul: { value: 1 },
+          uOcc: { value: -1 }, uSymEdge: { value: -1 }, uLevel: { value: 1 },
+          uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
+          uAmbGain: { value: +q.get('amb') || 1 }, uOpacity: { value: 0 },
+          uSettle: { value: 0 }, uIntensity: { value: 1 }, uDrift: { value: new THREE.Vector2() },
+          uWarm: { value: cfg.warm }, uM: { value: 0.06 }, uDrop: { value: cfg.drop }, uTrail: { value: cfg.trail },
+          uLock: { value: 0 }, uGlint: { value: -1 }, uEmph: { value: cfg.emph },
+        },
+      });
+      plane.getObject3D('mesh').material = mat;
+      setTime(shownT);
+    });
+  }
+
+  // 빛 속 먼지: 포스터 앞 공간에 260개. 빛·어둠 값은 모션 셰이더와 같은 uniform을 함께 써서 항상 같은 빛을 받는다
+  let dust = null;
+  function buildDust() {
+    const N = matchMedia('(prefers-reduced-motion: reduce)').matches ? 90 : 260;
+    const pos = new Float32Array(N * 3), seed = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = Math.random() - 0.5;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * A;
+      pos[i * 3 + 2] = 0.015 + 0.3 * Math.pow(Math.random(), 1.5);   // 벽 가까이에 더 많이
+      seed[i] = Math.random();
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+    const u = mat.uniforms;
+    dust = new THREE.Points(geo, new THREE.ShaderMaterial({
+      vertexShader: $('dustVert').textContent, fragmentShader: $('dustFrag').textContent,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: {
+        uA: u.uA, uOcc: u.uOcc, uLevel: u.uLevel, uIntensity: u.uIntensity, uOpacity: u.uOpacity,
+        uLight: u.uLight, uLight2: u.uLight2, uSweep: u.uSweep, uDrift: u.uDrift,
+        uTime: { value: 0 }, uPx: { value: 800 }, uStir: { value: new THREE.Vector2() },
+        uDustGain: { value: cfg.dust }, uDustSize: { value: cfg.dustSize },
+      },
+    }));
+    dust.frustumCulled = false; dust.renderOrder = 2;
+    target.object3D.add(dust);
+  }
+
+  // 설정값 중 셰이더·크기에 바로 들어가는 것들 반영 (나머지는 매 프레임 cfg에서 직접 읽음)
+  function applyCfg() {
+    if (!mat) return;
+    const u = mat.uniforms;
+    u.uWarm.value = cfg.warm; u.uDrop.value = cfg.drop; u.uTrail.value = cfg.trail; u.uEmph.value = cfg.emph;
+    if (dust) { dust.material.uniforms.uDustGain.value = cfg.dust; dust.material.uniforms.uDustSize.value = cfg.dustSize; }
+    const f = mode === 'ar' ? cfg.arFit : 1;
+    plane.object3D.scale.set(f, f, 1);
+    if (dust) dust.scale.set(f, f, f);
+    if (mode === 'web') fitPoster();
+  }
+
+  const loaded = new Promise((r) => scene.hasLoaded ? r() : scene.addEventListener('loaded', r, { once: true }))
+    .then(buildMaterial)
+    .then(buildDust)
+    .then(() => {
+      goAR.disabled = goWeb.disabled = false; goAR.textContent = 'AR로 보기';
+      window.__motion = { setTime, scene, mat, dust };      // 확인용
+    });
+
+  function fadeTo(to, ms) {
+    cancelAnimationFrame(fadeRaf);
+    const from = mat.uniforms.uOpacity.value, t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / ms);
+      mat.uniforms.uOpacity.value = from + (to - from) * (1 - Math.pow(1 - k, 3));
+      if (k < 1) fadeRaf = requestAnimationFrame(step);
+    };
+    fadeRaf = requestAnimationFrame(step);
+  }
+
+  // 좌우(왼쪽 = 시작, 오른쪽 = 끝)와 위아래(위 = 시작, 아래 = 끝)를 합친 진행 정도 -1 ~ 1.
+  // 왼쪽 아래처럼 서로 반대인 대각선은 상쇄돼 밝은 쪽에 머문다
+  function progress(h, v) { return Math.max(-1, Math.min(1, h / cfg.max + v / cfg.vmax)); }
+  function timeFor(h, v) {
+    const u = progress(h, v);
+    return u < 0 ? T_FRONT + u * (T_FRONT - T_LEFT) : T_FRONT + u * (T_RIGHT - T_FRONT);
+  }
+
+  // AR: 포스터 기준 좌표에서 카메라 위치 -> 포스터 정면과 이루는 좌우 / 위아래 각도 (왼쪽, 위에서 보면 음수)
+  const inv = new THREE.Matrix4(), camPos = new THREE.Vector3();
+  function arAngle() {
+    target.object3D.updateMatrixWorld(true);
+    $('cam').object3D.getWorldPosition(camPos);
+    camPos.applyMatrix4(inv.copy(target.object3D.matrixWorld).invert());
+    return [Math.atan2(camPos.x, camPos.z) * 180 / Math.PI, -Math.atan2(camPos.y, camPos.z) * 180 / Math.PI];
+  }
+
+  // 화면 보기: 휴대폰은 좌우·앞뒤 기울기, PC는 마우스(끌기) 위치
+  let webH = 0, webV = 0, tiltZero = null, usingTilt = false;
+  function onTilt(e) {
+    if (e.gamma == null || e.beta == null) return;
+    usingTilt = true;
+    if (tiltZero === null) tiltZero = [e.gamma, e.beta];
+    webH = e.gamma - tiltZero[0];
+    webV = tiltZero[1] - e.beta;                  // 윗변을 뒤로 젖히면 아래에서 올려다보는 것과 같음
+  }
+  function onPointer(e) {
+    if (usingTilt || (e.target.closest && e.target.closest('#panel, #gear'))) return;   // 설정 패널 위에서는 각도 그대로
+    webH = (e.clientX / innerWidth * 2 - 1) * cfg.max * 1.15;
+    webV = (e.clientY / innerHeight * 2 - 1) * cfg.vmax * 1.15;
+  }
+
+  let last = performance.now(), vel = 0, prevH = 0, prevV = 0, breathT = 0, dustT = 0;
+  let lock = 0, holdT = 0, glintOn = false, glintT = 1;   // UNDER CONTROL 고정 상태
+  function tick(now) {
+    const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
+    if (tracking && mat) {
+      const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
+      const k = 1 - Math.exp(-dt * cfg.react);                             // 흔들림 완화
+      ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
+      // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
+      const want = FIXED_T ?? timeFor(ah, av), W = cfg.follow;
+      vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
+      vel = Math.max(-cfg.speed, Math.min(cfg.speed, vel));
+      shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
+      setTime(shownT);
+      // UNDER CONTROL: 정면(좌우·위아래 모두 lockDeg 안)에 holdTime 동안 머물면 고정. 벗어나면(1.6배 밖) 풀림
+      const centered = Math.abs(ah) < cfg.lockDeg && Math.abs(av) < cfg.lockDeg;
+      const outside = Math.abs(ah) > cfg.lockDeg * 1.6 || Math.abs(av) > cfg.lockDeg * 1.6;
+      holdT = centered ? holdT + dt : 0;
+      const lockWant = holdT >= cfg.holdTime ? 1 : outside ? 0 : (lock > 0.5 ? 1 : 0);
+      lock += (lockWant - lock) * (1 - Math.exp(-dt * (lockWant ? 4 : 8)));
+      if (lock > 0.5 && !glintOn) { glintOn = true; glintT = 0; }      // 고정되는 순간 빛 한 줄기가 문구를 따라 지나감 (한 번)
+      if (lock < 0.2) glintOn = false;
+      if (glintOn && glintT < 1) glintT += dt / 0.9;
+      const U = mat.uniforms;
+      U.uLock.value = lock;
+      U.uGlint.value = glintOn && glintT < 1 ? 0.15 - 0.16 * glintT : -1;   // 글자 읽는 방향(아래 -> 위)으로
+      // 고정되면 흔들리던 빛이 멈추고 그림자가 또렷해짐
+      U.uSoft.value *= 1 - 0.7 * lock; U.uDir.value *= 1 - 0.7 * lock; U.uSettle.value *= 1 - lock;
+      // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
+      // (속도를 바꿔도 튀지 않게 시간을 따로 누적)
+      breathT += dt * cfg.breathSpeed; dustT += dt * cfg.dustSpeed * (1 - 0.85 * lock);
+      const b = breathT, calm = cfg.breath * (1 - lock);
+      mat.uniforms.uIntensity.value *= 1 + calm * (0.012 * Math.sin(b * 1.1) + 0.008 * Math.sin(b * 2.7 + 1));
+      mat.uniforms.uDrift.value.set(0.008 * Math.sin(b * 0.37), 0.006 * Math.sin(b * 0.53 + 2)).multiplyScalar(calm);
+      if (dust) {
+        const du = dust.material.uniforms, cam = scene.camera;
+        du.uTime.value = dustT;
+        du.uPx.value = scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
+        // 각도가 빨리 바뀐 만큼 공기가 흔들림 -> 천천히 가라앉음
+        const kick = (x) => Math.max(-0.03, Math.min(0.03, x)) * cfg.stir;
+        du.uStir.value.x += (kick(-(ah - prevH) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.x) * (1 - Math.exp(-dt * 3));
+        du.uStir.value.y += (kick((av - prevV) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.y) * (1 - Math.exp(-dt * 3));
+      }
+      prevH = ah; prevV = av;
+      // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
+      const sx = Math.abs(ah) / cfg.max + 0.02, sy = Math.abs(av) / cfg.vmax, n = Math.hypot(sx, sy);
+      mat.uniforms.uSweep.value.set(sx / n, sy / n);
+      // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고, 옆으로 비켜설수록 조금 더 길어짐
+      mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear;
+      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);
+      if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
+        target.object3D.rotation.y = -ah * Math.PI / 180 * cfg.tilt;
+        target.object3D.rotation.x = -av * Math.PI / 180 * cfg.tilt;
+      }
+      if (DEBUG) {
+        $('meterVal').textContent = `좌우 ${ah.toFixed(0)}° · 위아래 ${av.toFixed(0)}° · ${shownT.toFixed(2)}s`;
+        $('meterKnob').style.left = `calc(${(progress(ah, av) + 1) * 50}% - 1px)`;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function onFound() {
+    scan.hidden = true;
+    pill.innerHTML = mode === 'ar' ? '<b>포스터 인식됨</b> · 좌우·위아래로 비켜서 보세요'
+                                   : (usingTilt || matchMedia('(pointer: coarse)').matches ? '휴대폰을 좌우·앞뒤로 기울여 보세요' : '마우스를 좌우·위아래로 움직여 보세요');
+    pill.hidden = false;
+    if (!tracking && mode === 'ar') [ah, av] = arAngle();
+    tracking = true;                               // 처음엔 어둠에서 지금 각도의 장면까지 빛이 번져 들어온다
+    fadeTo(1, 350);
+    setTimeout(() => { if (tracking) pill.hidden = true; }, 3000);
+  }
+  function onLost() {
+    tracking = false; shownT = T_LEFT; vel = 0;
+    fadeTo(0, 200);
+    scan.hidden = false; pill.hidden = false;
+    pill.textContent = '포스터 전체가 화면에 들어오게 비춰 주세요';
+  }
+
+  goAR.addEventListener('click', async () => {
+    await loaded;
+    mode = 'ar'; goAR.disabled = goWeb.disabled = true; goAR.textContent = '카메라 여는 중…';
+    if (DEBUG) $('meter').hidden = false;
+    try {
+      await scene.systems['mindar-image-system'].start();
+      document.documentElement.classList.add('running');
+      start.hidden = true; scan.hidden = false; pill.hidden = false; gear.hidden = false;
+      applyCfg();
+    } catch (e) {
+      start.hidden = true; err.hidden = false;
+      $('errMsg').textContent = (location.protocol !== 'https:' && location.hostname !== 'localhost')
+        ? '카메라는 https 주소에서만 열립니다. https 링크로 다시 열거나 \'화면으로 보기\'를 눌러 주세요.'
+        : '브라우저 설정에서 이 페이지의 카메라 권한을 허용한 뒤 새로고침해 주세요.';
+    }
+  });
+
+  // 화면 보기: 카메라 없이 포스터를 화면 가득 띄움
+  function fitPoster() {
+    const cam = $('cam').getObject3D('camera');
+    const fov = cam.fov * Math.PI / 180, aspect = innerWidth / innerHeight;
+    const h = 1.4151 * 1.12, w = 1 * 1.12;                  // 여백 조금
+    const d = Math.max(h / 2 / Math.tan(fov / 2), w / 2 / Math.tan(fov / 2) / aspect) / cfg.size;
+    target.object3D.position.set(0, 0, -d);
+  }
+  goWeb.addEventListener('click', async () => {
+    await loaded;
+    mode = 'web';
+    document.documentElement.classList.add('web');
+    // iOS는 기울기 센서를 쓰려면 버튼을 누를 때 허락을 받아야 한다
+    try {
+      if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        if (await DeviceOrientationEvent.requestPermission() === 'granted') addEventListener('deviceorientation', onTilt);
+      } else addEventListener('deviceorientation', onTilt);
+    } catch (e) {}
+    addEventListener('pointermove', onPointer); addEventListener('pointerdown', onPointer);
+    addEventListener('resize', fitPoster);
+    const o = target.object3D;
+    o.matrixAutoUpdate = true; o.visible = true;
+    applyCfg();
+    start.hidden = true; gear.hidden = false;
+    if (DEBUG) $('meter').hidden = false;
+    onFound();
+  });
+
+  // ---- 설정 패널: 슬라이더를 움직이면 바로 반영되고 이 기기에 저장됨 ----
+  const panel = $('panel'), gear = $('gear'), note = $('panelNote'), inputs = {};
+  for (const s of SETTINGS) {
+    if (s.group) { const h = document.createElement('h3'); h.textContent = s.group; $('panelBody').appendChild(h); continue; }
+    const row = document.createElement('label'), name = document.createElement('span'), val = document.createElement('span');
+    const r = document.createElement('input');
+    Object.assign(r, { type: 'range', min: s.min, max: s.max, step: s.step, value: cfg[s.key] });
+    name.textContent = s.label; val.textContent = s.fmt(cfg[s.key]);
+    r.addEventListener('input', () => { cfg[s.key] = +r.value; val.textContent = s.fmt(cfg[s.key]); note.textContent = ''; applyCfg(); saveCfg(); });
+    row.append(name, val, r); $('panelBody').appendChild(row);
+    inputs[s.key] = { r, val, s };
+  }
+  function saveCfg() { try { localStorage.setItem(STORE, JSON.stringify(cfg)); } catch (e) {} }
+  function setPanel(open) { panel.hidden = !open; gear.setAttribute('aria-expanded', String(open)); }
+  gear.addEventListener('click', () => setPanel(panel.hidden));
+  panel.querySelector('.close').addEventListener('click', () => { setPanel(false); gear.focus(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { setPanel(false); gear.focus(); } });
+  panel.querySelector('.reset').addEventListener('click', () => {
+    for (const k in inputs) { const { r, val, s } = inputs[k]; cfg[k] = s.def; r.value = s.def; val.textContent = s.fmt(s.def); }
+    applyCfg(); saveCfg(); note.textContent = '기본값으로 돌렸어요';
+  });
+  // 기본값과 다른 것만 주소에 담아 복사 -> 팀원이 열면 같은 설정으로 보임
+  panel.querySelector('.copy').addEventListener('click', async () => {
+    const url = new URL(location.href);
+    for (const k in inputs) { if (cfg[k] !== inputs[k].s.def) url.searchParams.set(k, cfg[k]); else url.searchParams.delete(k); }
+    try { await navigator.clipboard.writeText(url.href); note.textContent = '지금 설정이 담긴 링크를 복사했어요'; }
+    catch (e) { note.textContent = url.href; }       // 복사가 막힌 브라우저에서는 주소를 보여줘서 직접 복사
+  });
+
+  target.addEventListener('targetFound', onFound);
+  target.addEventListener('targetLost', onLost);
+  scene.addEventListener('arError', () => { scan.hidden = true; pill.hidden = true; err.hidden = false; });
+</script>
+</body>
+</html>

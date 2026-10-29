@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>모션포스터 실시간 AR</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe-v1.5.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+  /* 포스터 톤(회색 벽, 검정 그림자)을 따르는 얇은 안내 */
+  :root { --ink: #0d0d0e; --wall: #c9c9c7; --text: #f2f2f0; --muted: #a3a3a0; --veil: rgba(13,13,14,.72); color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--text); overflow: hidden; touch-action: none;
+               font: 15px/1.5 "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  [hidden] { display: none !important; }
+  html.running, html.running body { background: transparent; }  /* AR: 카메라 영상(z-index -2)이 보이도록 */
+  a-scene { position: fixed; inset: 0; }
+  .layer { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; pointer-events: none;
+           padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); }
+
+  #start { background: var(--ink); pointer-events: auto; }
+  #start .box { display: grid; gap: 18px; justify-items: center; text-align: center; max-width: 320px; }
+  #start .mark { display: grid; grid-template-columns: repeat(3, 34px); gap: 6px; }
+  #start .mark i { height: 30px; background: repeating-linear-gradient(var(--text) 0 4px, transparent 4px 8.5px); }
+  #start h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .01em; }
+  #start p { margin: 0; color: var(--muted); font-size: 14px; }
+  #start .btns { display: grid; gap: 10px; width: 100%; }
+  .btn { pointer-events: auto; font: inherit; font-weight: 600; border-radius: 999px; padding: 13px 30px; cursor: pointer; border: 0; }
+  .btn.primary { color: var(--ink); background: var(--text); }
+  .btn.ghost { color: var(--text); background: transparent; box-shadow: inset 0 0 0 1px rgba(242,242,240,.35); }
+  .btn:focus-visible { outline: 2px solid var(--wall); outline-offset: 3px; }
+  .btn[disabled] { opacity: .5; }
+
+  #scan .frame { width: min(68vw, 52vh); aspect-ratio: 594 / 841; position: relative; }
+  #scan .frame i { position: absolute; width: 16%; aspect-ratio: 1; border: 2px solid var(--text); opacity: .9; }
+  #scan .frame i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+  #scan .frame i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+  #scan .frame i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+  #scan .frame i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+  @media (prefers-reduced-motion: no-preference) {
+    #scan .frame { animation: breathe 1.6s ease-in-out infinite; }
+    @keyframes breathe { 50% { transform: scale(.96); opacity: .6; } }
+  }
+  .pill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+          z-index: 11; background: var(--veil); color: var(--text); padding: 8px 16px; border-radius: 999px;
+          font-size: 13px; white-space: nowrap; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  .pill b { font-weight: 600; }
+
+  /* 각도 눈금 (?debug=1): 왼쪽 끝 = 시작(어둠), 가운데 = 밝음, 오른쪽 끝 = 끝(어둠 + 심볼) */
+  #meter { position: fixed; left: 50%; transform: translateX(-50%); top: calc(16px + env(safe-area-inset-top, 0px)); z-index: 11;
+           width: min(320px, calc(100vw - 32px)); display: grid; gap: 6px; background: var(--veil); padding: 10px 12px;
+           border-radius: 12px; font-size: 12px; color: var(--muted); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  #meter .bar { position: relative; height: 6px; border-radius: 3px;
+                background: linear-gradient(90deg, #000, #888 30%, var(--wall) 50%, #888 70%, #000); }
+  #meter .bar i { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--text); left: 50%; }
+  #meter .row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+
+  #err { background: var(--ink); pointer-events: auto; text-align: center; }
+  #err p { max-width: 300px; margin: 0; color: var(--muted); }
+  #err strong { display: block; color: var(--text); margin-bottom: 8px; font-size: 16px; }
+</style>
+</head>
+<body>
+
+<div class="layer" id="start">
+  <div class="box">
+    <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
+    <h1>PROCESS FACTORY AUTOMATION</h1>
+    <p id="intro">포스터 앞에서 좌우로 비켜서면 빛이 들어오고 빠집니다. 정면에서 가장 밝고, 옆으로 갈수록 어둠에 잠깁니다.</p>
+    <div class="btns">
+      <button class="btn primary" id="goAR" type="button" disabled>불러오는 중…</button>
+      <button class="btn ghost" id="goWeb" type="button" disabled>화면으로 보기</button>
+    </div>
+  </div>
+</div>
+
+<div class="layer" id="scan" hidden>
+  <div class="frame" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+</div>
+<div class="pill" id="pill" hidden>포스터 전체가 화면에 들어오게 비춰 주세요</div>
+
+<div id="meter" hidden>
+  <div class="row"><span>왼쪽 · 시작</span><span id="meterVal">0°</span><span>오른쪽 · 끝</span></div>
+  <div class="bar"><i id="meterKnob"></i></div>
+</div>
+
+<div class="layer" id="err" hidden>
+  <p><strong>카메라를 열 수 없습니다</strong><span id="errMsg">브라우저 설정에서 이 페이지의 카메라 권한을 허용한 뒤 새로고침해 주세요.</span></p>
+</div>
+
+<a-scene id="scene"
+  mindar-image="imageTargetSrc: targets.mind; autoStart: false; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.0005; filterBeta: 300; warmupTolerance: 3; missTolerance: 8"
+  renderer="colorManagement: true; physicallyCorrectLights: false; antialias: true"
+  vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" embedded>
+  <a-camera id="cam" position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
+  <a-entity id="target" mindar-image-target="targetIndex: 0">
+    <!-- 포스터 폭 = 1, 높이 = 3000/2120 (A1). 모션은 아래 셰이더가 포스터 이미지로 매 프레임 그린다 -->
+    <a-plane id="motionPlane" width="1" height="1.4151" position="0 0 0"></a-plane>
+  </a-entity>
+</a-scene>
+
+<!-- 모션 셰이더: After Effects 확정 모션(Poster_Fadeout_C15_고해상도)의 레이어를 한 장면으로 계산한다.
+     좌표 p = 포스터 위 위치 (x: 왼->오 0~1, y: 위->아래 0~1). 길이는 포스터 폭 기준(W 단위). -->
+<script id="motionFrag" type="x-shader/x-fragment">
+  precision highp float;
+  uniform sampler2D uPoster, uSymbol;
+  uniform vec2 uTexSize;          // 2120, 3000
+  uniform float uA;               // 높이/폭 = 1.4151
+  uniform vec4 uLight;            // 빛 타원 중심 x, y, 반지름 x, y (W 단위)
+  uniform vec2 uLight2;           // 타원 경계 부드러움, 하이라이트 반지름 (W 단위)
+  uniform float uStretch, uSoft, uDir;   // 그림자 길이 배율, 오른쪽으로 커지는 블러, 방향 블러 (포스터 높이 대비)
+  uniform float uOcc, uSymEdge;   // 오른쪽에서 들어오는 가림 띠 위치 (심볼용은 0.3초 늦음)
+  uniform float uLevel;           // 마지막 암전 (1 -> 0)
+  uniform float uSymA, uTailA, uSymScale;
+  uniform float uAmbGain, uOpacity;
+  varying vec2 vUv;
+
+  const float X0 = 0.09;          // 왼쪽 세로 텍스트 열 경계 = 그림자가 늘어나는 기준선
+  const float BAND = 1.5;         // 가림 띠 경계 폭 (영상 실측: 포스터 폭의 1.5배에 걸쳐 고르게 번짐)
+  const float AMB = 0.2;          // 가려진 벽 톤 (영상 실측 밝기 48~50 / 255, 거의 평평)
+
+  float band(float edge, float x) { return clamp((edge - (1.0 - x)) / BAND + 0.5, 0.0, 1.0); }
+
+  float lodAuto(vec2 uv) {
+    vec2 t = uv * uTexSize;
+    return log2(max(max(length(dFdx(t)), length(dFdy(t))), 1.0));
+  }
+  vec3 tex(vec2 p, float lod) { return textureLod(uPoster, vec2(p.x, 1.0 - p.y), lod).rgb; }
+
+  // 인쇄본 왼쪽 아래 로고 자리는 바로 위 빈 종이로 덮는다 (영상과 같게)
+  vec3 poster(vec2 p, float lod) {
+    vec2 lo = vec2(60.0, 2872.0) / uTexSize, hi = vec2(440.0, 2958.0) / uTexSize, f = vec2(14.0) / uTexSize;
+    vec2 m2 = smoothstep(lo - f, lo + f, p) * (1.0 - smoothstep(hi - f, hi + f, p));
+    float m = m2.x * m2.y;
+    vec3 c = tex(p, lod);
+    return m > 0.0 ? mix(c, tex(p - vec2(0.0, 100.0 / uTexSize.y), lod), m) : c;
+  }
+
+  void main() {
+    vec2 p = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 P = vec2(p.x, p.y * uA);
+    float base = lodAuto(p);
+    bool inText = p.x < X0 || (p.y > 0.955 && p.x < 0.20);
+
+    // 1) 포스터: 텍스트 열은 고정, 그림자는 기준선에서 오른쪽으로 늘어나며 번짐
+    vec3 col;
+    if (inText) {
+      col = poster(p, base);
+    } else {
+      float map = clamp((p.x - X0) / (1.0 - X0), 0.0, 1.0);
+      vec2 q = vec2(X0 + (p.x - X0) / uStretch, p.y);
+      float lod = max(base, log2(1.0 + uSoft * map * uTexSize.y * 0.7));
+      float spread = uDir * uA;                     // 방향 블러 길이 (가로, W 단위)
+      col = vec3(0.0);
+      for (int i = 0; i < 7; i++) {
+        float o = (float(i) / 6.0 - 0.5) * spread;
+        col += poster(vec2(max(q.x + o, X0), q.y), lod);
+      }
+      col /= 7.0;
+    }
+
+    // 2) 광원 쪽 하이라이트 (스크린 30%)
+    vec2 c = uLight.xy;
+    float ramp = 1.0 - clamp(length(P - c) / uLight2.y, 0.0, 1.0);
+    col = 1.0 - (1.0 - col) * (1.0 - 0.3 * ramp);
+
+    // 3) 오른쪽에서 들어오는 가림 띠: 직사광이 가려지고 환경광만 받는 벽 (그림자 톤이 벽 전체로 퍼짐)
+    float occ = band(uOcc, p.x);
+    if (occ > 0.0) {
+      vec3 amb;
+      if (p.x < X0) {
+        amb = col * 0.55;                           // 텍스트 열은 벽보다 천천히 가라앉음 (영상 실측)
+      } else {
+        // 그림자 톤이 벽 전체로 퍼진 평평한 회색 + 가로 그림자 결이 아주 희미하게
+        float l = log2(0.03 * uTexSize.y);
+        float r = 0.02;
+        float s = (tex(p, l).r * 2.0 + tex(p + vec2(r, 0.0), l).r + tex(p - vec2(r, 0.0), l).r) * 0.25;
+        amb = vec3(AMB * (0.85 + 0.3 * s)) * uAmbGain;
+      }
+      col = mix(col, amb, occ);
+    }
+
+    // 4) 빛 타원 밖은 어둠
+    vec2 d = P - c;
+    float k = length(d / uLight.zw);
+    float dist = length(d) * (1.0 - 1.0 / max(k, 1e-4));
+    col *= 1.0 - smoothstep(-uLight2.x * 0.5, uLight2.x * 0.5, dist);
+
+    // 5) 마지막 암전
+    col *= uLevel;
+
+    // 6) 가운데 심볼 (암전 위에 남음): 가림 띠를 따라 오른쪽부터 드러나고, 다음 바퀴 시작에 천천히 사라짐
+    vec2 sz = vec2(0.28, 0.28 * 66.0 / 246.0) * uSymScale;
+    vec2 su = (P - vec2(0.5, 0.5 * uA)) / sz + 0.5;
+    if (su.x > 0.0 && su.x < 1.0 && su.y > 0.0 && su.y < 1.0) {
+      float a = texture(uSymbol, vec2(su.x, 1.0 - su.y)).a;
+      float sm = band(uSymEdge, p.x);
+      col = mix(col, vec3(1.0), a * clamp(uSymA * sm + uTailA, 0.0, 1.0));
+    }
+
+    gl_FragColor = vec4(col, uOpacity);
+  }
+</script>
+<script id="motionVert" type="x-shader/x-vertex">
+  varying vec2 vUv;
+  void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+</script>
+
+<script>
+  // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽 끝 = 끝(어둠 + 심볼)
+  // 주소 옵션: ?max=35 (어둠이 다 차는 각도, 기본 30) / ?flip=1 (좌우 반대) / ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
+  const q = new URLSearchParams(location.search);
+  const MAX_DEG = +q.get('max') || 30;
+  const FLIP = q.get('flip') === '1';
+  const DEBUG = q.get('debug') === '1';
+  const FIXED_T = q.has('t') ? +q.get('t') : null;
+  const T_LEFT = 0.6, T_FRONT = 4.0, T_RIGHT = 7.6;
+  const MAX_SPEED = 4.0;                          // 모션 시간 기준 초/초: 손떨림이나 인식 튐에도 장면이 확 바뀌지 않게
+
+  // ---- AE 키프레임 (시간, 값, 나가는/들어오는 영향력 %) 그대로 ----
+  function bezier(x1, x2) {                       // cubic-bezier(x1, 0, x2, 1)
+    return (u) => {
+      let s = u;
+      for (let i = 0; i < 8; i++) {
+        const x = 3 * (1 - s) * (1 - s) * s * x1 + 3 * (1 - s) * s * s * x2 + s * s * s - u;
+        const dx = 3 * (1 - s) * (1 - s) * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2);
+        if (Math.abs(dx) < 1e-6) break;
+        s = Math.min(1, Math.max(0, s - x / dx));
+      }
+      return 3 * (1 - s) * s * s + s * s * s;
+    };
+  }
+  function key(t0, v0, t1, v1, outInf, inInf) {
+    const e = bezier(outInf / 100, 1 - inInf / 100);
+    return (t) => t <= t0 ? v0 : t >= t1 ? v1 : v0 + (v1 - v0) * e((t - t0) / (t1 - t0));
+  }
+  function points(pts) {                          // 실측 점 사이를 부드럽게 잇기
+    return (t) => {
+      if (t <= pts[0][0]) return pts[0][1];
+      for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) {
+        const [t0, v0] = pts[i - 1], [t1, v1] = pts[i], u = (t - t0) / (t1 - t0);
+        return v0 + (v1 - v0) * u * u * (3 - 2 * u);
+      }
+      return pts[pts.length - 1][1];
+    };
+  }
+  const A = 3000 / 2120;
+  const K = {
+    // 빛 타원: 0.3초 왼쪽 바깥의 작은 점 -> 4초 포스터 전체 (이후 그대로)
+    cx: key(0.3, -0.35, 4.0, -0.24, 30, 75),
+    rx: key(0.3, 0.05, 4.0, 1.62, 30, 75),
+    ry: key(0.3, 0.30 * A, 4.0, 1.30 * A, 30, 75),
+    fe: key(0.3, 0.3, 4.0, 0.7, 30, 75),
+    hot: key(0.3, 0.05, 4.0, 1.2, 30, 75),
+    stretch: key(0.0, 1.0, 7.7, 1.7, 75, 25),
+    soft: key(3.0, 0, 7.7, 0.02, 75, 25),
+    dir: key(3.0, 0, 7.7, 0.035, 75, 25),
+    // 가림 띠: AE 키(4.9~6.9초)는 이후 수정본에서 바뀌어서, 확정 영상의 열별 밝기로 맞춘 값
+    occ: points([[5.6, -0.75], [5.9, 0.5], [6.1, 1.05], [6.4, 1.75]]),
+    level: points([[6.3, 1], [6.5, 0.96], [6.7, 0.81], [6.9, 0.58], [7.2, 0.25], [7.5, 0.02], [7.6, 0]]),   // 마지막 암전 (영상 실측)
+    symIn: key(5.85, 0, 6.15, 0.15, 50, 50),
+    symTail: key(0.0, 0.15, 1.0, 0, 33, 50),
+    symScale: key(5.85, 1, 7.3, 1.04, 33, 33),
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const scene = $('scene'), plane = $('motionPlane'), target = $('target');
+  const goAR = $('goAR'), goWeb = $('goWeb'), start = $('start'), scan = $('scan'), pill = $('pill'), err = $('err');
+  const THREE = AFRAME.THREE;
+  let mat = null, mode = null, tracking = false, shownT = T_LEFT, angle = -MAX_DEG, fadeRaf = 0;
+
+  function setTime(t) {
+    if (!mat) return;
+    const u = mat.uniforms;
+    u.uLight.value.set(K.cx(t), 0.5 * A, K.rx(t), K.ry(t));
+    u.uLight2.value.set(K.fe(t), K.hot(t));
+    u.uStretch.value = K.stretch(t); u.uSoft.value = K.soft(t); u.uDir.value = K.dir(t);
+    u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
+    u.uLevel.value = K.level(t);
+    u.uSymA.value = K.symIn(t); u.uTailA.value = t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
+  }
+
+  function buildMaterial() {
+    return new Promise((resolve) => {
+      const loader = new THREE.TextureLoader();
+      let n = 0;
+      const done = () => { if (++n === 2) resolve(); };
+      const poster = loader.load('poster.jpg', done), symbol = loader.load('symbol.png', done);
+      poster.minFilter = THREE.LinearMipmapLinearFilter; poster.generateMipmaps = true; poster.anisotropy = 4;
+      mat = new THREE.ShaderMaterial({
+        vertexShader: $('motionVert').textContent,
+        fragmentShader: $('motionFrag').textContent,
+        transparent: true,
+        uniforms: {
+          uPoster: { value: poster }, uSymbol: { value: symbol },
+          uTexSize: { value: new THREE.Vector2(2120, 3000) }, uA: { value: A },
+          uLight: { value: new THREE.Vector4() }, uLight2: { value: new THREE.Vector2() },
+          uStretch: { value: 1 }, uSoft: { value: 0 }, uDir: { value: 0 },
+          uOcc: { value: -1 }, uSymEdge: { value: -1 }, uLevel: { value: 1 },
+          uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
+          uAmbGain: { value: +q.get('amb') || 1 }, uOpacity: { value: 0 },
+        },
+      });
+      plane.getObject3D('mesh').material = mat;
+      setTime(shownT);
+    });
+  }
+
+  const loaded = new Promise((r) => scene.hasLoaded ? r() : scene.addEventListener('loaded', r, { once: true }))
+    .then(buildMaterial)
+    .then(() => {
+      goAR.disabled = goWeb.disabled = false; goAR.textContent = 'AR로 보기';
+      window.__motion = { setTime, scene, mat };            // 확인용
+    });
+
+  function fadeTo(to, ms) {
+    cancelAnimationFrame(fadeRaf);
+    const from = mat.uniforms.uOpacity.value, t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / ms);
+      mat.uniforms.uOpacity.value = from + (to - from) * (1 - Math.pow(1 - k, 3));
+      if (k < 1) fadeRaf = requestAnimationFrame(step);
+    };
+    fadeRaf = requestAnimationFrame(step);
+  }
+
+  function timeForAngle(deg) {
+    const u = Math.max(-1, Math.min(1, deg / MAX_DEG));
+    return u < 0 ? T_FRONT + u * (T_FRONT - T_LEFT) : T_FRONT + u * (T_RIGHT - T_FRONT);
+  }
+
+  // AR: 포스터 기준 좌표에서 카메라 위치 -> 포스터 정면과 이루는 좌우 각도 (왼쪽에서 보면 음수)
+  const inv = new THREE.Matrix4(), camPos = new THREE.Vector3();
+  function arAngle() {
+    target.object3D.updateMatrixWorld(true);
+    $('cam').object3D.getWorldPosition(camPos);
+    camPos.applyMatrix4(inv.copy(target.object3D.matrixWorld).invert());
+    return Math.atan2(camPos.x, camPos.z) * 180 / Math.PI;
+  }
+
+  // 화면 보기: 휴대폰은 좌우 기울기, PC는 마우스(끌기) 위치
+  let webAngle = 0, tiltZero = null, usingTilt = false;
+  function onTilt(e) {
+    if (e.gamma == null) return;
+    usingTilt = true;
+    if (tiltZero === null) tiltZero = e.gamma;
+    webAngle = e.gamma - tiltZero;
+  }
+  function onPointer(e) {
+    if (usingTilt) return;
+    webAngle = (e.clientX / innerWidth * 2 - 1) * MAX_DEG * 1.15;
+  }
+
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    if (tracking && mat) {
+      const raw = mode === 'ar' ? arAngle() : webAngle;
+      angle += ((FLIP ? -raw : raw) - angle) * (1 - Math.exp(-dt * 8));   // 흔들림 완화
+      const want = FIXED_T ?? timeForAngle(angle), step = MAX_SPEED * dt;
+      shownT += Math.max(-step, Math.min(step, want - shownT));
+      setTime(shownT);
+      if (mode === 'web') target.object3D.rotation.y = -angle * Math.PI / 180 * 0.35;   // 기울인 쪽으로 살짝 돌아 보임
+      if (DEBUG) {
+        $('meterVal').textContent = `${angle.toFixed(0)}° · ${shownT.toFixed(2)}s`;
+        $('meterKnob').style.left = `calc(${(Math.max(-1, Math.min(1, angle / MAX_DEG)) + 1) * 50}% - 1px)`;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function onFound() {
+    scan.hidden = true;
+    pill.innerHTML = mode === 'ar' ? '<b>포스터 인식됨</b> · 좌우로 비켜서 보세요'
+                                   : (usingTilt || matchMedia('(pointer: coarse)').matches ? '휴대폰을 좌우로 기울여 보세요' : '마우스를 좌우로 움직여 보세요');
+    pill.hidden = false;
+    if (!tracking && mode === 'ar') angle = arAngle();
+    tracking = true;                               // 처음엔 어둠에서 지금 각도의 장면까지 빛이 번져 들어온다
+    fadeTo(1, 350);
+    setTimeout(() => { if (tracking) pill.hidden = true; }, 3000);
+  }
+  function onLost() {
+    tracking = false; shownT = T_LEFT;
+    fadeTo(0, 200);
+    scan.hidden = false; pill.hidden = false;
+    pill.textContent = '포스터 전체가 화면에 들어오게 비춰 주세요';
+  }
+
+  goAR.addEventListener('click', async () => {
+    await loaded;
+    mode = 'ar'; goAR.disabled = goWeb.disabled = true; goAR.textContent = '카메라 여는 중…';
+    if (DEBUG) $('meter').hidden = false;
+    try {
+      await scene.systems['mindar-image-system'].start();
+      document.documentElement.classList.add('running');
+      start.hidden = true; scan.hidden = false; pill.hidden = false;
+    } catch (e) {
+      start.hidden = true; err.hidden = false;
+      $('errMsg').textContent = (location.protocol !== 'https:' && location.hostname !== 'localhost')
+        ? '카메라는 https 주소에서만 열립니다. https 링크로 다시 열거나 \'화면으로 보기\'를 눌러 주세요.'
+        : '브라우저 설정에서 이 페이지의 카메라 권한을 허용한 뒤 새로고침해 주세요.';
+    }
+  });
+
+  // 화면 보기: 카메라 없이 포스터를 화면 가득 띄움
+  function fitPoster() {
+    const cam = $('cam').getObject3D('camera');
+    const fov = cam.fov * Math.PI / 180, aspect = innerWidth / innerHeight;
+    const h = 1.4151 * 1.12, w = 1 * 1.12;                  // 여백 조금
+    const d = Math.max(h / 2 / Math.tan(fov / 2), w / 2 / Math.tan(fov / 2) / aspect);
+    target.object3D.position.set(0, 0, -d);
+  }
+  goWeb.addEventListener('click', async () => {
+    await loaded;
+    mode = 'web';
+    // iOS는 기울기 센서를 쓰려면 버튼을 누를 때 허락을 받아야 한다
+    try {
+      if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        if (await DeviceOrientationEvent.requestPermission() === 'granted') addEventListener('deviceorientation', onTilt);
+      } else addEventListener('deviceorientation', onTilt);
+    } catch (e) {}
+    addEventListener('pointermove', onPointer); addEventListener('pointerdown', onPointer);
+    addEventListener('resize', fitPoster);
+    const o = target.object3D;
+    o.matrixAutoUpdate = true; o.visible = true;
+    fitPoster();
+    start.hidden = true;
+    if (DEBUG) $('meter').hidden = false;
+    onFound();
+  });
+
+  target.addEventListener('targetFound', onFound);
+  target.addEventListener('targetLost', onLost);
+  scene.addEventListener('arError', () => { scan.hidden = true; pill.hidden = true; err.hidden = false; });
+</script>
+</body>
+</html>

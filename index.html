@@ -268,8 +268,12 @@
     // 포스터 밖: 포스터가 어두운 만큼만 벽 쪽으로 옅은 그늘이 번짐 (밝을 땐 투명 -> 실제 벽이 그대로 보임)
     if (outside > 0.0) {
       float lit = clamp(lightF * uLevel * (1.0 - 0.75 * occ), 0.0, 1.0);
-      float a = (1.0 - lit) * (1.0 - smoothstep(0.0, uM, outside)) * 0.8;
-      gl_FragColor = vec4(0.0, 0.0, 0.0, a * uOpacity);
+      float spill = (1.0 - lit) * (1.0 - smoothstep(0.0, uM, outside)) * 0.8;
+      // 빛을 받는 동안 포스터가 벽에서 살짝 떠 있는 것처럼: 빛이 오는 반대쪽 벽에 옅고 부드러운 그림자
+      vec2 sq = pw - uSweep * 0.022;
+      float sd = max(max(-sq.x, sq.x - 1.0), max(-sq.y, sq.y - uA));
+      float dropShadow = (1.0 - smoothstep(-0.012, 0.028, sd)) * lit * 0.32;
+      gl_FragColor = vec4(0.0, 0.0, 0.0, max(spill, dropShadow) * uOpacity);
       return;
     }
 
@@ -288,6 +292,55 @@
 <script id="motionVert" type="x-shader/x-vertex">
   varying vec2 vUv;
   void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+</script>
+
+<!-- 빛 속 먼지: 포스터 앞 공간(포스터 폭의 1.5~32%)에 떠 있는 먼지. 포스터 위 같은 자리에 빛이 닿을 때만 은은하게 반짝인다 -->
+<script id="dustVert" type="x-shader/x-vertex">
+  attribute float aSeed;
+  uniform float uTime, uA, uOcc, uLevel, uIntensity, uOpacity, uPx;
+  uniform vec4 uLight;
+  uniform vec2 uLight2, uSweep, uDrift, uStir;
+  varying float vA;
+  void main() {
+    vec3 p = position;
+    float s = aSeed, t = uTime;
+    // 공기 중에서 아주 느리게 맴돎
+    p.x += 0.03 * sin(t * (0.11 + 0.07 * s) + s * 40.0);
+    p.y += 0.035 * sin(t * (0.09 + 0.05 * fract(s * 7.0)) + s * 17.0);
+    p.z += 0.015 * sin(t * 0.13 + s * 9.0);
+    // 휴대폰을 빨리 움직이면 공기가 흔들리듯 살짝 휘날림 (앞쪽 먼지일수록 크게)
+    p.xy += uStir * (0.4 + 0.6 * fract(s * 3.7)) * (0.5 + p.z * 3.0);
+
+    // 이 먼지 바로 뒤 포스터 지점의 빛 (모션 셰이더와 같은 계산)
+    vec2 P = vec2(p.x + 0.5, 0.5 * uA - p.y);
+    vec2 Dp = vec2(-uSweep.y, uSweep.x);
+    float L = uSweep.x + uA * uSweep.y, Lp = abs(Dp.x) + uA * abs(Dp.y);
+    vec2 S = vec2(dot(P - vec2(0.5, 0.5 * uA), uSweep) + 0.5 * L, dot(P - vec2(0.5, 0.5 * uA), Dp) + 0.5 * Lp);
+    vec2 c = uLight.xy * vec2(L, Lp) + uDrift * L;
+    vec2 d = S - c;
+    float k = length(d / (uLight.zw * vec2(L, Lp)));
+    float F = uLight2.x * L;
+    float core = 1.0 - smoothstep(-F * 0.5, F * 0.5, length(d) * (1.0 - 1.0 / max(k, 1e-4)));
+    float occ = clamp((uOcc - (1.0 - S.x / L)) / 1.5 + 0.5, 0.0, 1.0);
+    float hot = 1.0 - clamp(length(d) / (uLight2.y * L), 0.0, 1.0);
+    float lit = core * (0.5 + 0.5 * hot) * (1.0 - occ) * uLevel * uIntensity;
+    // 먼지가 돌면서 빛을 받았다 놓쳤다 함
+    float tw = 0.5 + 0.5 * sin(t * (0.7 + 1.9 * fract(s * 11.0)) + s * 60.0);
+    float edge = smoothstep(0.0, 0.04, min(min(P.x, 1.0 - P.x), min(P.y, uA - P.y)));
+    vA = lit * (0.2 + 0.8 * tw * tw) * edge * uOpacity;
+
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_PointSize = max(1.5, (0.003 + 0.005 * fract(s * 5.3)) * uPx / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }
+</script>
+<script id="dustFrag" type="x-shader/x-fragment">
+  precision highp float;
+  varying float vA;
+  void main() {
+    float a = smoothstep(0.5, 0.05, length(gl_PointCoord - 0.5)) * vA * 0.75;
+    gl_FragColor = vec4(1.0, 0.97, 0.9, a);       // 더하기 합성: 빛을 받은 먼지만 밝게 보임
+  }
 </script>
 
 <script>
@@ -399,11 +452,40 @@
     });
   }
 
+  // 빛 속 먼지: 포스터 앞 공간에 260개. 빛·어둠 값은 모션 셰이더와 같은 uniform을 함께 써서 항상 같은 빛을 받는다
+  let dust = null;
+  function buildDust() {
+    const N = matchMedia('(prefers-reduced-motion: reduce)').matches ? 90 : 260;
+    const pos = new Float32Array(N * 3), seed = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = Math.random() - 0.5;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * A;
+      pos[i * 3 + 2] = 0.015 + 0.3 * Math.pow(Math.random(), 1.5);   // 벽 가까이에 더 많이
+      seed[i] = Math.random();
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+    const u = mat.uniforms;
+    dust = new THREE.Points(geo, new THREE.ShaderMaterial({
+      vertexShader: $('dustVert').textContent, fragmentShader: $('dustFrag').textContent,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: {
+        uA: u.uA, uOcc: u.uOcc, uLevel: u.uLevel, uIntensity: u.uIntensity, uOpacity: u.uOpacity,
+        uLight: u.uLight, uLight2: u.uLight2, uSweep: u.uSweep, uDrift: u.uDrift,
+        uTime: { value: 0 }, uPx: { value: 800 }, uStir: { value: new THREE.Vector2() },
+      },
+    }));
+    dust.frustumCulled = false; dust.renderOrder = 2;
+    target.object3D.add(dust);
+  }
+
   const loaded = new Promise((r) => scene.hasLoaded ? r() : scene.addEventListener('loaded', r, { once: true }))
     .then(buildMaterial)
+    .then(buildDust)
     .then(() => {
       goAR.disabled = goWeb.disabled = false; goAR.textContent = 'AR로 보기';
-      window.__motion = { setTime, scene, mat };            // 확인용
+      window.__motion = { setTime, scene, mat, dust };      // 확인용
     });
 
   function fadeTo(to, ms) {
@@ -449,9 +531,9 @@
     webV = (e.clientY / innerHeight * 2 - 1) * MAX_V * 1.15;
   }
 
-  let last = performance.now(), vel = 0;
+  let last = performance.now(), vel = 0, prevH = 0, prevV = 0;
   function tick(now) {
-    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
     if (tracking && mat) {
       const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
       const k = 1 - Math.exp(-dt * 8);                                     // 흔들림 완화
@@ -460,12 +542,22 @@
       const want = FIXED_T ?? timeFor(ah, av), W = 6;
       vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
       vel = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, vel));
-      shownT += vel * dt;
+      shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
       setTime(shownT);
       // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
       const s = now / 1000;
       mat.uniforms.uIntensity.value *= 1 + 0.012 * Math.sin(s * 1.1) + 0.008 * Math.sin(s * 2.7 + 1);
       mat.uniforms.uDrift.value.set(0.008 * Math.sin(s * 0.37), 0.006 * Math.sin(s * 0.53 + 2));
+      if (dust) {
+        const du = dust.material.uniforms, cam = scene.camera;
+        du.uTime.value = s;
+        du.uPx.value = scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
+        // 각도가 빨리 바뀐 만큼 공기가 흔들림 -> 천천히 가라앉음
+        const kick = (x) => Math.max(-0.03, Math.min(0.03, x));
+        du.uStir.value.x += (kick(-(ah - prevH) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.x) * (1 - Math.exp(-dt * 3));
+        du.uStir.value.y += (kick((av - prevV) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.y) * (1 - Math.exp(-dt * 3));
+      }
+      prevH = ah; prevV = av;
       // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
       const sx = Math.abs(ah) / MAX_DEG + 0.02, sy = Math.abs(av) / MAX_V, n = Math.hypot(sx, sy);
       mat.uniforms.uSweep.value.set(sx / n, sy / n);

@@ -429,6 +429,9 @@
     { key: 'follow', label: '장면이 따라오는 속도', min: 1, max: 15, step: 0.5, def: 6, fmt: times },
     { key: 'speed', label: '장면 최대 속도', min: 0.5, max: 10, step: 0.5, def: 4, fmt: (v) => v + '초/초' },
     { key: 'react', label: '각도 반응 (낮을수록 흔들림 적음)', min: 2, max: 20, step: 1, def: 8, fmt: times },
+    { group: '시작 장면' },
+    { key: 'introHold', label: '처음 어둠이 머무는 시간', min: 0, max: 3, step: 0.1, def: 0.8, fmt: (v) => v.toFixed(1) + '초' },
+    { key: 'introDur', label: '빛이 들어오는 시간', min: 1.5, max: 8, step: 0.1, def: 3.7, fmt: (v) => v.toFixed(1) + '초' },
     { group: '빛' },
     { key: 'breath', label: '빛 숨쉬기 세기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
     { key: 'breathSpeed', label: '빛 숨쉬기 속도', min: 0.2, max: 3, step: 0.1, def: 1, fmt: times },
@@ -512,7 +515,7 @@
   const THREE = AFRAME.THREE;
   let mat = null, mode = null, tracking = false, shownT = T_LEFT, ah = -cfg.max, av = 0, fadeRaf = 0;
 
-  function setTime(t) {
+  function setTime(t, intro = false) {
     if (!mat) return;
     const u = mat.uniforms;
     u.uLight.value.set(K.cx(t), 0.5, K.rx(t), K.ry(t));
@@ -520,7 +523,8 @@
     u.uStretch.value = K.stretch(t); u.uSoft.value = K.soft(t); u.uDir.value = K.dir(t);
     u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
     u.uLevel.value = K.level(t);
-    u.uSymA.value = K.symIn(t); u.uTailA.value = t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
+    // 시작 장면에서는 이전 바퀴의 남은 심볼 없이 완전한 어둠
+    u.uSymA.value = K.symIn(t); u.uTailA.value = !intro && t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
     u.uSettle.value = K.settle(t); u.uIntensity.value = K.intensity(t);
   }
 
@@ -645,18 +649,29 @@
   }
 
   let last = performance.now(), vel = 0, prevH = 0, prevV = 0, breathT = 0, dustT = 0;
+  let introT = -1, lostAt = 0;                      // 시작 장면 진행 시간(-1 = 끝남), 포스터를 놓친 시각
+  const INTRO_FROM = 0.3;                           // 시작 장면은 빛이 들어오기 직전(0.3초)의 완전한 어둠부터
   function tick(now) {
     const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
     if (tracking && mat) {
       const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
       const k = 1 - Math.exp(-dt * cfg.react);                             // 흔들림 완화
       ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
-      // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
-      const want = FIXED_T ?? timeFor(ah, av), W = cfg.follow;
-      vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
-      vel = Math.max(-cfg.speed, Math.min(cfg.speed, vel));
-      shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
-      setTime(shownT);
+      if (introT >= 0) {
+        // 시작 장면: 정면이어도 먼저 완전한 어둠 -> 빛이 들어와 원래 포스터가 됨 (모션 원래 속도로 재생)
+        // 끝나면 그 장면(4초)에서 이어서 각도를 따라감
+        introT += dt;
+        const u = Math.min(1, Math.max(0, introT - cfg.introHold) / cfg.introDur);
+        shownT = INTRO_FROM + (T_FRONT - INTRO_FROM) * u; vel = 0;
+        if (u >= 1) introT = -1;
+      } else {
+        // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
+        const want = FIXED_T ?? timeFor(ah, av), W = cfg.follow;
+        vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
+        vel = Math.max(-cfg.speed, Math.min(cfg.speed, vel));
+        shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
+      }
+      setTime(shownT, introT >= 0);
       // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
       // (속도를 바꿔도 튀지 않게 시간을 따로 누적)
       breathT += dt * cfg.breathSpeed; dustT += dt * cfg.dustSpeed;
@@ -675,7 +690,8 @@
       prevH = ah; prevV = av;
       // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
       const sx = Math.abs(ah) / cfg.max + 0.02, sy = Math.abs(av) / cfg.vmax, n = Math.hypot(sx, sy);
-      mat.uniforms.uSweep.value.set(sx / n, sy / n);
+      if (introT >= 0) mat.uniforms.uSweep.value.set(1, 0);   // 시작 장면의 빛은 포스터 원래대로 왼쪽에서
+      else mat.uniforms.uSweep.value.set(sx / n, sy / n);
       // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고, 옆으로 비켜설수록 조금 더 길어짐
       mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear;
       mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);
@@ -698,12 +714,14 @@
                                    : (usingTilt || matchMedia('(pointer: coarse)').matches ? '휴대폰을 좌우·앞뒤로 기울여 보세요' : '마우스를 좌우·위아래로 움직여 보세요');
     pill.hidden = false;
     if (!tracking && mode === 'ar') [ah, av] = arAngle();
-    tracking = true;                               // 처음엔 어둠에서 지금 각도의 장면까지 빛이 번져 들어온다
+    // 처음 찾았거나 3초 넘게 놓쳤다 다시 찾으면 시작 장면부터 (잠깐 흔들려 놓친 건 이어서)
+    if (!tracking && FIXED_T === null && (!lostAt || performance.now() - lostAt > 3000)) { introT = 0; shownT = INTRO_FROM; vel = 0; }
+    tracking = true;
     fadeTo(1, 350);
     setTimeout(() => { if (tracking) pill.hidden = true; }, 3000);
   }
   function onLost() {
-    tracking = false; shownT = T_LEFT; vel = 0;
+    tracking = false; vel = 0; introT = -1; lostAt = performance.now();
     fadeTo(0, 200);
     scan.hidden = false; pill.hidden = false;
     pill.textContent = '포스터 전체가 화면에 들어오게 비춰 주세요';

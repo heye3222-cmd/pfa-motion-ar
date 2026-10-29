@@ -13,6 +13,7 @@
                font: 15px/1.5 "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   [hidden] { display: none !important; }
   html.running, html.running body { background: transparent; }  /* AR: 카메라 영상(z-index -2)이 보이도록 */
+  html.web, html.web body { background: #fff; }   /* 화면 보기: 흰 벽 위에 걸린 것처럼 -> 포스터 밖 그늘·그림자가 보임 */
   a-scene { position: fixed; inset: 0; }
   .layer { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; pointer-events: none;
            padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); }
@@ -153,6 +154,23 @@
     return 0.035 * sin(y * 7.0 + edge * 5.0) + 0.018 * sin(y * 17.0 - edge * 3.0 + 1.3);
   }
   float hash(float n) { return fract(sin(n * 91.345) * 47453.21); }
+  // 문구 잉크 (종이보다 어두운 정도). 왼쪽 문구 열 안에서만
+  float inkAt(vec2 s, float lod) {
+    if (s.x < 0.0 || s.x > X0 || s.y < 0.0 || s.y > 1.0) return 0.0;
+    float c = tex(s, lod).r, paper = tex(s, log2(0.02 * uTexSize.y)).r;
+    return clamp((paper - c) / max(paper, 0.05) * 1.4, 0.0, 1.0);
+  }
+  // 그림자처럼 끌리며 사라지는 문구: 보는 방향(빛 반대쪽)으로 꼬리가 길어지고, 길어질수록 잉크가 옅어지고 번짐
+  float textTrail(vec2 p, float q, float lod) {
+    vec2 off = uSweep * (0.16 * q) / vec2(1.0, uA);
+    float acc = 0.0, wsum = 0.0;
+    for (int i = 0; i < 8; i++) {
+      float f = float(i) / 7.0, w = 1.0 - 0.7 * f;
+      acc += inkAt(p - off * f, lod + 1.5 * q * f) * w;
+      wsum += w;
+    }
+    return acc / wsum * (1.0 - 0.35 * q);
+  }
   float textSink(float id, float cell, float x) {
     float uc = sweepU(vec2(x, (id + 0.5) * cell));
     float q = clamp((uOcc - 0.15 - 0.2 * hash(id) - (1.0 - uc)) / 0.45 + 0.5, 0.0, 1.0);
@@ -189,12 +207,15 @@
     float halo = (1.0 - core) * glow * 0.12;          // 빛이 오기 전 벽 가장자리가 희미하게 밝아지는 정도
     float m = core + halo;
 
-    // 문구(왼쪽 세로 글자열): 어둠이 오는 순서대로 글자 몇 개 높이(4.5%)씩, 벽보다 조금 늦게 초점이 풀리며 가라앉음
-    //   qT = 초점 풀림 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
+    // 문구(왼쪽 세로 글자열): 어둠이 오는 순서대로 글자 몇 개 높이(4.5%)씩, 벽보다 조금 늦게
+    //   큰 글자 그림자처럼 보는 방향으로 꼬리가 끌리며 옅어져 사라짐 (좌우로 보면 오른쪽으로, 위아래로 보면 아래로 끌림)
+    //   qT = 사라지는 정도 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
+    //   꼬리는 문구 열 밖 벽까지 이어지므로 열 오른쪽 일부도 함께 계산
     float qT = 0.0, qC = 0.0;
-    if (inCol) {
-      float cell = 0.045, id = floor(p.y / cell), f = fract(p.y / cell);
-      float qa = textSink(id - 1.0, cell, p.x), qb = textSink(id, cell, p.x), qc = textSink(id + 1.0, cell, p.x);
+    bool nearCol = p.x < X0 + 0.16 * uSweep.x + 1e-3;
+    if (nearCol) {
+      float cell = 0.045, id = floor(p.y / cell), f = fract(p.y / cell), xc = min(p.x, 0.045);
+      float qa = textSink(id - 1.0, cell, xc), qb = textSink(id, cell, xc), qc = textSink(id + 1.0, cell, xc);
       qT = mix(qb, (qb + qc) * 0.5, smoothstep(0.7, 1.0, f));
       qT = mix(qT, (qa + qb) * 0.5, smoothstep(0.3, 0.0, f));
       qC = clamp((uOcc - 0.25 - (1.0 - sweepU(p))) / 0.6 + 0.5, 0.0, 1.0);
@@ -203,7 +224,11 @@
     // 1) 포스터: 문구는 제자리, 그림자는 기준선에서 늘어나며 번짐
     vec3 col;
     if (inText) {
-      col = poster(p, base + 4.5 * smoothstep(0.0, 0.8, qT));
+      col = poster(p, base);
+      if (inCol && qT > 0.001) {
+        vec3 paper = poster(p, base + 5.0);
+        col = mix(col, paper * (1.0 - textTrail(p, qT, base)), smoothstep(0.0, 0.15, qT));
+      }
     } else {
       float map = clamp((p.x - X0) / (1.0 - X0), 0.0, 1.0);
       // 어둠 바로 앞: 그림자가 먼저 길게 끌려가며 번짐
@@ -225,6 +250,9 @@
       }
       col /= 7.0;
     }
+
+    // 1-0) 문구 꼬리가 열 밖 벽으로 이어지는 부분
+    if (!inText && nearCol && qT > 0.001) col *= 1.0 - 0.9 * textTrail(p, qT, base);
 
     // 1-1) 빛이 약한 곳은 그림자 대비도 약함: 그림자가 빛과 함께 또렷해짐
     float wallTone = tex(p, log2(0.02 * uTexSize.y)).r;
@@ -346,11 +374,12 @@
 <script>
   // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽·위 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽·아래 끝 = 끝(어둠 + 심볼)
   // 빛과 어둠은 보는 쪽에서 들어온다: 좌우로 비켜서면 가로로, 위아래로 비켜서면 세로로 지나감
-  // 주소 옵션: ?max=35 (좌우로 어둠이 다 차는 각도, 기본 30) / ?vmax=20 (위아래, 기본 25) / ?flip=1 (좌우 반대)
-  //            ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
+  // 주소 옵션: ?max=30 (좌우로 어둠이 다 차는 각도, 기본 22) / ?vmax=25 (위아래, 기본 18) / ?flip=1 (좌우 반대)
+  //            ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정) / ?warm=0 (빛 경계 따뜻한 기운 끔)
+  // 각도는 피드백 반영(2026-10-29): 크게 돌리지 않아도 끝까지 가도록 30°/25° -> 22°/18°
   const q = new URLSearchParams(location.search);
-  const MAX_DEG = +q.get('max') || 30;
-  const MAX_V = +q.get('vmax') || 25;             // 위아래는 움직일 수 있는 폭이 좁아서 조금 작게
+  const MAX_DEG = +q.get('max') || 22;
+  const MAX_V = +q.get('vmax') || 18;             // 위아래는 움직일 수 있는 폭이 좁아서 조금 작게
   const FLIP = q.get('flip') === '1';
   const DEBUG = q.get('debug') === '1';
   const FIXED_T = q.has('t') ? +q.get('t') : null;
@@ -565,8 +594,8 @@
       mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / MAX_V)) * 0.35;
       mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / MAX_DEG);
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
-        target.object3D.rotation.y = -ah * Math.PI / 180 * 0.35;
-        target.object3D.rotation.x = -av * Math.PI / 180 * 0.35;
+        target.object3D.rotation.y = -ah * Math.PI / 180 * 0.2;
+        target.object3D.rotation.x = -av * Math.PI / 180 * 0.2;
       }
       if (DEBUG) {
         $('meterVal').textContent = `좌우 ${ah.toFixed(0)}° · 위아래 ${av.toFixed(0)}° · ${shownT.toFixed(2)}s`;
@@ -621,6 +650,7 @@
   goWeb.addEventListener('click', async () => {
     await loaded;
     mode = 'web';
+    document.documentElement.classList.add('web');
     // iOS는 기울기 센서를 쓰려면 버튼을 누를 때 허락을 받아야 한다
     try {
       if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {

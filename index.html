@@ -13,7 +13,9 @@
                font: 15px/1.5 "Pretendard", -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
   [hidden] { display: none !important; }
   html.running, html.running body { background: transparent; }  /* AR: 카메라 영상(z-index -2)이 보이도록 */
-  html.web, html.web body { background: #fff; }   /* 화면 보기: 흰 벽 위에 걸린 것처럼 -> 포스터 밖 그늘·그림자가 보임 */
+  html.web, html.web body { background: var(--wallbg, #fff); }   /* 화면 보기: 흰 벽(또는 포스터 색) 위에 걸린 것처럼 */
+  /* 빛이 들어오기 전의 검은 배경. 카메라 화면과 벽 배경 위, 포스터(캔버스) 아래에 깔리고 빛이 들어오며 걷힘 */
+  #veil { position: fixed; inset: 0; z-index: 0; background: #000; pointer-events: none; }   /* DOM 순서상 a-scene(포스터)보다 앞 = 아래에 깔림 */
   a-scene { position: fixed; inset: 0; }
   .a-enter-vr, .a-enter-ar { display: none !important; }   /* A-Frame 기본 VR/AR 버튼 (설정 버튼과 겹침) */
   .layer { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; pointer-events: none;
@@ -85,6 +87,8 @@
 </style>
 </head>
 <body>
+
+<div id="veil" hidden></div>
 
 <div class="layer" id="start">
   <div class="box">
@@ -423,9 +427,10 @@
     { key: 'size', label: '포스터 크기 (화면 보기)', min: 0.5, max: 1.6, step: 0.05, def: 1, fmt: pct },
     { key: 'arFit', label: '포스터 겹침 크기 (AR)', min: 0.9, max: 1.1, step: 0.005, def: 1, fmt: (v) => (v * 100).toFixed(1) + '%' },
     { key: 'tilt', label: '기울어 보이는 정도 (화면 보기)', min: 0, max: 0.6, step: 0.05, def: 0.2, fmt: pct },
+    { key: 'bgTone', label: '빛이 들어온 뒤 배경 색 (흰색 -> 포스터 회색)', min: 0, max: 1, step: 0.05, def: 0, fmt: (v) => v === 0 ? '흰색' : v === 1 ? '포스터 회색' : pct(v) },
     { group: '각도' },
-    { key: 'max', label: '좌우 끝 각도', min: 8, max: 45, step: 1, def: 22, fmt: deg },
-    { key: 'vmax', label: '위아래 끝 각도', min: 8, max: 45, step: 1, def: 18, fmt: deg },
+    { key: 'max', label: '그림자가 끝까지 도는 좌우 각도', min: 8, max: 45, step: 1, def: 22, fmt: deg },
+    { key: 'vmax', label: '그림자가 끝까지 기우는 위아래 각도', min: 8, max: 45, step: 1, def: 18, fmt: deg },
     { group: '속도' },
     { key: 'follow', label: '장면이 따라오는 속도', min: 1, max: 15, step: 0.5, def: 6, fmt: times },
     { key: 'speed', label: '장면 최대 속도', min: 0.5, max: 10, step: 0.5, def: 4, fmt: (v) => v + '초/초' },
@@ -437,7 +442,7 @@
     { key: 'introHold', label: '처음 어둠이 머무는 시간', min: 0, max: 3, step: 0.1, def: 0.8, fmt: (v) => v.toFixed(1) + '초' },
     { key: 'introDur', label: '빛이 들어오는 시간', min: 1.5, max: 8, step: 0.1, def: 3.7, fmt: (v) => v.toFixed(1) + '초' },
     { group: '빛' },
-    { key: 'breath', label: '빛 숨쉬기 세기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'breath', label: '빛 숨쉬기 세기 (기본 꺼짐)', min: 0, max: 3, step: 0.1, def: 0, fmt: times },
     { key: 'breathSpeed', label: '빛 숨쉬기 속도', min: 0.2, max: 3, step: 0.1, def: 1, fmt: times },
     { key: 'warm', label: '빛 경계 따뜻함', min: 0, max: 1.5, step: 0.05, def: 0.6, fmt: times },
     { group: '먼지' },
@@ -450,7 +455,7 @@
     { key: 'drop', label: '떠 있는 그림자 진하기', min: 0, max: 1, step: 0.02, def: 0.32, fmt: pct },
     { key: 'trail', label: '문구 꼬리 길이', min: 0, max: 0.4, step: 0.01, def: 0.16, fmt: pct },
   ].map((s) => s.key ? { ...s, fmt: s.fmt || String } : s);
-  const STORE = 'pfa-motion-ar-settings';
+  const STORE = 'pfa-motion-ar-settings-v2';   // 크리틱 반영으로 기본값이 바뀌어서, 예전에 저장된 값 대신 새 기본값으로 시작
   const cfg = {};
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) {}
@@ -533,7 +538,8 @@
     u.uLevel.value = K.level(t);
     // 시작 장면에서는 이전 바퀴의 남은 심볼 없이 완전한 어둠
     u.uSymA.value = K.symIn(t); u.uTailA.value = !intro && t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
-    u.uSettle.value = K.settle(t); u.uIntensity.value = K.intensity(t);
+    u.uSettle.value = 0;                            // 빛이 들어올 때 그림자 흐림이 변하던 것(일렁임) 뺌 - 크리틱 반영
+    u.uIntensity.value = K.intensity(t);
   }
 
   function buildMaterial() {
@@ -603,6 +609,9 @@
     plane.object3D.scale.set(f, f, 1);
     if (dust) dust.scale.set(f, f, f);
     if (mode === 'web') fitPoster();
+    // 화면 보기 배경: 흰색(#fff) ~ 포스터 벽 회색(#c4c3bf) 사이
+    const mixC = (a, b) => Math.round(a + (b - a) * cfg.bgTone);
+    document.documentElement.style.setProperty('--wallbg', `rgb(${mixC(255, 196)}, ${mixC(255, 195)}, ${mixC(255, 191)})`);
   }
 
   const loaded = new Promise((r) => scene.hasLoaded ? r() : scene.addEventListener('loaded', r, { once: true }))
@@ -658,6 +667,9 @@
 
   let last = performance.now(), vel = 0, prevH = 0, prevV = 0, breathT = 0, dustT = 0;
   let introT = -1, lostAt = 0;                      // 시작 장면 진행 시간(-1 = 끝남), 포스터를 놓친 시각
+  let rotS = 0, veilShown = -1;                     // 지금 그림자 회전(-1~1), 배경 검정 막의 현재 불투명도
+  const veil = $('veil');
+  const smooth01 = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
   const INTRO_FROM = 0.3;                           // 시작 장면은 빛이 들어오기 직전(0.3초)의 완전한 어둠부터
   function tick(now) {
     const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
@@ -665,23 +677,25 @@
       const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
       const k = 1 - Math.exp(-dt * cfg.react);                             // 흔들림 완화
       ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
+      let introU = 1;                                // 시작 장면의 빛 진행 (0 = 어둠, 1 = 다 들어옴)
       if (introT >= 0) {
         // 시작 장면: 정면이어도 먼저 완전한 어둠 -> 빛이 들어와 원래 포스터가 됨 (모션 원래 속도로 재생)
-        // 끝나면 그 장면(4초)에서 이어서 각도를 따라감
         introT += dt;
-        const u = Math.min(1, Math.max(0, introT - cfg.introHold) / cfg.introDur);
-        shownT = INTRO_FROM + (T_FRONT - INTRO_FROM) * u; vel = 0;
-        if (u >= 1) introT = -1;
+        introU = Math.min(1, Math.max(0, introT - cfg.introHold) / cfg.introDur);
+        shownT = INTRO_FROM + (T_FRONT - INTRO_FROM) * introU; vel = 0;
+        if (introU >= 1) introT = -1;
       } else {
-        // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
-        const want = FIXED_T ?? timeFor(ah, av), W = cfg.follow;
+        // 크리틱 반영: 빛이 들어온 뒤에는 움직여도 사라지지 않음 -> 늘 밝은 포스터(4초 장면), 각도는 그림자만 움직임
+        const want = FIXED_T ?? T_FRONT, W = cfg.follow;
         vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
         vel = Math.max(-cfg.speed, Math.min(cfg.speed, vel));
         shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
       }
       setTime(shownT, introT >= 0);
-      // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
-      // (속도를 바꿔도 튀지 않게 시간을 따로 누적)
+      // 배경: 빛이 들어오기 전엔 검정, 빛이 들어오는 타이밍에 맞춰 걷힘 (화면 보기 = 흰 벽 / AR = 카메라 화면이 드러남)
+      const veilOp = introT >= 0 ? 1 - smooth01((introU - 0.1) / 0.55) : 0;
+      if (Math.abs(veilOp - veilShown) > 0.003 || (veilOp === 0 && veilShown !== 0)) { veil.style.opacity = veilOp.toFixed(3); veilShown = veilOp; }
+      // 가만히 있어도 살아 있는 빛 (기본은 꺼 둠: 도입부가 일렁여 보여서 크리틱 반영. 설정에서 켤 수 있음)
       breathT += dt * cfg.breathSpeed; dustT += dt * cfg.dustSpeed;
       const b = breathT;
       mat.uniforms.uIntensity.value *= 1 + cfg.breath * (0.012 * Math.sin(b * 1.1) + 0.008 * Math.sin(b * 2.7 + 1));
@@ -696,13 +710,14 @@
         du.uStir.value.y += (kick((av - prevV) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.y) * (1 - Math.exp(-dt * 3));
       }
       prevH = ah; prevV = av;
-      // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
-      const sx = Math.abs(ah) / cfg.max + 0.02, sy = Math.abs(av) / cfg.vmax, n = Math.hypot(sx, sy);
-      if (introT >= 0) mat.uniforms.uSweep.value.set(1, 0);   // 시작 장면의 빛은 포스터 원래대로 왼쪽에서
-      else mat.uniforms.uSweep.value.set(sx / n, sy / n);
-      // 그림자 회전: 모션 시간을 따라 밑동을 축으로 돎 (기울기 = tan 각도, 길이는 1/cos 만큼 보정해 도는 동안 짧아지지 않게)
-      // 여기에 원래의 위아래 보기 기울기와 옆으로 비켜설수록 조금 길어지는 것을 더함
-      const rot = cfg.rotMax * Math.PI / 180 * K.rot(shownT);
+      // 빛은 늘 포스터 원래대로 왼쪽에서 (각도에 따라 빛 방향을 바꾸지 않음 -> 밝기가 출렁이지 않게)
+      mat.uniforms.uSweep.value.set(1, 0);
+      // 그림자 회전: 시작 장면에선 빛을 따라 휘감겨 들어오고(모션 시간), 그 뒤에는 보는 좌우 각도를 따라 밑동을 축으로 돎
+      // (왼쪽 -> 아래로, 오른쪽 -> 위로). 바뀔 때 튀지 않게 부드럽게 따라감. 위아래로 보면 원래처럼 위/아래로 더 기욺
+      const rotWant = introT >= 0 ? K.rot(shownT) : Math.max(-1, Math.min(1, -ah / cfg.max));
+      rotS = introT >= 0 ? rotWant : rotS + (rotWant - rotS) * (1 - Math.exp(-dt * 6));
+      const rot = cfg.rotMax * Math.PI / 180 * rotS;
+      mat.uniforms.uLight.value.y = 0.5 - 0.35 * cfg.rotLight * rotS;      // 빛 중심도 그림자 회전을 따라 살짝
       mat.uniforms.uShear.value = Math.max(-2.5, Math.min(2.5, Math.tan(rot) + Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear));
       mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);   // 회전 중 길이 보정은 뺌 (길이가 펌프질하듯 변함)
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
@@ -744,7 +759,7 @@
     try {
       await scene.systems['mindar-image-system'].start();
       document.documentElement.classList.add('running');
-      start.hidden = true; scan.hidden = false; pill.hidden = false; gear.hidden = false;
+      start.hidden = true; scan.hidden = false; pill.hidden = false; gear.hidden = false; veil.hidden = false;
       applyCfg();
     } catch (e) {
       start.hidden = true; err.hidden = false;
@@ -777,7 +792,7 @@
     const o = target.object3D;
     o.matrixAutoUpdate = true; o.visible = true;
     applyCfg();
-    start.hidden = true; gear.hidden = false;
+    start.hidden = true; gear.hidden = false; veil.hidden = false;
     if (DEBUG) $('meter').hidden = false;
     onFound();
   });

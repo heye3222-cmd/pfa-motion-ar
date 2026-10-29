@@ -109,6 +109,7 @@
   uniform vec2 uLight2;           // 타원 경계 부드러움, 하이라이트 반지름 (W 단위)
   uniform vec2 uSweep;            // 빛·어둠이 지나가는 방향 (시작 쪽 -> 끝 쪽). 좌우 = (1,0), 위아래 = (0,1)
   uniform float uStretch, uSoft, uDir;   // 그림자 길이 배율, 오른쪽으로 커지는 블러, 방향 블러 (포스터 높이 대비)
+  uniform float uShear, uStretchMul;     // 보는 방향에 따른 그림자 기울기 (위에서 보면 +: 아래로 기욺), 비켜설수록 길어지는 배율
   uniform float uOcc, uSymEdge;   // 오른쪽에서 들어오는 가림 띠 위치 (심볼용은 0.3초 늦음)
   uniform float uLevel;           // 마지막 암전 (1 -> 0)
   uniform float uSymA, uTailA, uSymScale;
@@ -136,6 +137,22 @@
     return m > 0.0 ? mix(c, tex(p - vec2(0.0, 100.0 / uTexSize.y), lod), m) : c;
   }
 
+  // 지나가는 방향으로 본 위치 (0 = 시작 쪽 가장자리, 1 = 끝 쪽 가장자리)
+  float sweepU(vec2 p) {
+    float L = uSweep.x + uA * uSweep.y;
+    return dot(vec2(p.x - 0.5, (p.y - 0.5) * uA), uSweep) / L + 0.5;
+  }
+  // 어둠 경계가 곧은 선이 아니라 부드럽게 일렁이도록. 경계가 움직이면 결도 같이 흐른다
+  float wobble(float y, float edge) {
+    return 0.035 * sin(y * 7.0 + edge * 5.0) + 0.018 * sin(y * 17.0 - edge * 3.0 + 1.3);
+  }
+  float hash(float n) { return fract(sin(n * 91.345) * 47453.21); }
+  float textSink(float id, float cell, float x) {
+    float uc = sweepU(vec2(x, (id + 0.5) * cell));
+    float q = clamp((uOcc - 0.15 - 0.2 * hash(id) - (1.0 - uc)) / 0.45 + 0.5, 0.0, 1.0);
+    return q * q * (3.0 - 2.0 * q);
+  }
+
   void main() {
     vec2 p = vec2(vUv.x, 1.0 - vUv.y);
     vec2 P = vec2(p.x, p.y * uA);
@@ -147,21 +164,43 @@
     vec2 Pc = P - vec2(0.5, 0.5 * uA);
     vec2 S = vec2(dot(Pc, uSweep) + 0.5 * L, dot(Pc, Dp) + 0.5 * Lp);
     float u = S.x / L;
-    bool inText = p.x < X0 || (p.y > 0.955 && p.x < 0.20);
+    bool inCol = p.x < X0;
+    bool inText = inCol || (p.y > 0.955 && p.x < 0.20);
 
-    // 1) 포스터: 텍스트 열은 고정, 그림자는 기준선에서 오른쪽으로 늘어나며 번짐
+    // 오른쪽(또는 아래)에서 오는 어둠의 정도. 경계는 일렁임
+    float occW = band(uOcc, u + wobble(S.y, uOcc));
+
+    // 문구(왼쪽 세로 글자열): 어둠이 오는 순서대로 글자 몇 개 높이(4.5%)씩, 벽보다 조금 늦게 초점이 풀리며 가라앉음
+    //   qT = 초점 풀림 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
+    float qT = 0.0, qC = 0.0;
+    if (inCol) {
+      float cell = 0.045, id = floor(p.y / cell), f = fract(p.y / cell);
+      float qa = textSink(id - 1.0, cell, p.x), qb = textSink(id, cell, p.x), qc = textSink(id + 1.0, cell, p.x);
+      qT = mix(qb, (qb + qc) * 0.5, smoothstep(0.7, 1.0, f));
+      qT = mix(qT, (qa + qb) * 0.5, smoothstep(0.3, 0.0, f));
+      qC = clamp((uOcc - 0.25 - (1.0 - sweepU(p))) / 0.6 + 0.5, 0.0, 1.0);
+    }
+
+    // 1) 포스터: 문구는 제자리, 그림자는 기준선에서 늘어나며 번짐
     vec3 col;
     if (inText) {
-      col = poster(p, base);
+      col = poster(p, base + 4.5 * smoothstep(0.0, 0.8, qT));
     } else {
       float map = clamp((p.x - X0) / (1.0 - X0), 0.0, 1.0);
-      vec2 q = vec2(X0 + (p.x - X0) / uStretch, p.y);
-      float lod = max(base, log2(1.0 + uSoft * map * uTexSize.y * 0.7));
-      float spread = uDir * uA;                     // 방향 블러 길이 (가로, W 단위)
+      // 어둠 바로 앞: 그림자가 먼저 길게 끌려가며 번짐
+      float lead = clamp((uOcc + 0.3 - (1.0 - u)) / 0.6 + 0.5, 0.0, 1.0);   // 어둠보다 조금 앞서 가는 좁은 띠
+      float pre = (1.0 - smoothstep(0.25, 0.75, occW)) * smoothstep(0.0, 0.6, lead);
+      float s = uStretch * uStretchMul * (1.0 + 0.45 * pre);
+      float xs = X0 + (p.x - X0) / s;
+      // 그림자 기울기: 기준선에서 멀어질수록 위/아래로 (AE Corner Pin 기울기와 같은 식)
+      vec2 q = vec2(xs, p.y - uShear * (xs - X0) / uA);
+      float lod = max(base, log2(1.0 + (uSoft * map + 0.012 * pre) * uTexSize.y * 0.7));
+      vec2 dir = normalize(vec2(1.0, uShear / uA));
+      float spread = (uDir + 0.03 * pre) * uA;      // 방향 블러 길이 (그림자 방향, W 단위)
       col = vec3(0.0);
       for (int i = 0; i < 7; i++) {
-        float o = (float(i) / 6.0 - 0.5) * spread;
-        col += poster(vec2(max(q.x + o, X0), q.y), lod);
+        vec2 o = dir * (float(i) / 6.0 - 0.5) * spread;
+        col += poster(vec2(max(q.x + o.x, X0), q.y + o.y), lod);
       }
       col /= 7.0;
     }
@@ -171,12 +210,19 @@
     float ramp = 1.0 - clamp(length(S - c) / (uLight2.y * L), 0.0, 1.0);
     col = 1.0 - (1.0 - col) * (1.0 - 0.3 * ramp);
 
-    // 3) 오른쪽에서 들어오는 가림 띠: 직사광이 가려지고 환경광만 받는 벽 (그림자 톤이 벽 전체로 퍼짐)
-    float occ = band(uOcc, u);
+    // 2-1) 어둠 경계의 반그림자: 닿기 직전 그림자 대비가 먼저 풀리며 옅은 회색 막이 낌
+    float pen = smoothstep(0.02, 0.25, occW) * (1.0 - smoothstep(0.35, 0.75, occW));
+    if (pen > 0.0 && !inCol) {
+      float hz = tex(p, log2(0.012 * uTexSize.y)).r;
+      col = mix(col, vec3(hz * 0.8 + 0.08), pen * 0.55);
+    }
+
+    // 3) 가림 띠: 직사광이 가려지고 환경광만 받는 벽 (그림자 톤이 벽 전체로 퍼짐)
+    float occ = inCol ? max(qC, occW * 0.4) : occW;
     if (occ > 0.0) {
       vec3 amb;
-      if (p.x < X0) {
-        amb = col * 0.55;                           // 텍스트 열은 벽보다 천천히 가라앉음 (영상 실측)
+      if (inCol) {
+        amb = col * 0.55;                           // 문구는 번진 채 종이 톤으로 가라앉음 (영상 실측 0.55)
       } else {
         // 그림자 톤이 벽 전체로 퍼진 평평한 회색 + 가로 그림자 결이 아주 희미하게
         float l = log2(0.03 * uTexSize.y);
@@ -305,7 +351,7 @@
           uPoster: { value: poster }, uSymbol: { value: symbol },
           uTexSize: { value: new THREE.Vector2(2120, 3000) }, uA: { value: A },
           uLight: { value: new THREE.Vector4() }, uLight2: { value: new THREE.Vector2() }, uSweep: { value: new THREE.Vector2(1, 0) },
-          uStretch: { value: 1 }, uSoft: { value: 0 }, uDir: { value: 0 },
+          uStretch: { value: 1 }, uSoft: { value: 0 }, uDir: { value: 0 }, uShear: { value: 0 }, uStretchMul: { value: 1 },
           uOcc: { value: -1 }, uSymEdge: { value: -1 }, uLevel: { value: 1 },
           uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
           uAmbGain: { value: +q.get('amb') || 1 }, uOpacity: { value: 0 },
@@ -379,6 +425,9 @@
       // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
       const sx = Math.abs(ah) / MAX_DEG + 0.02, sy = Math.abs(av) / MAX_V, n = Math.hypot(sx, sy);
       mat.uniforms.uSweep.value.set(sx / n, sy / n);
+      // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고 (최대 약 19°), 옆으로 비켜설수록 조금 더 길어짐
+      mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / MAX_V)) * 0.35;
+      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / MAX_DEG);
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
         target.object3D.rotation.y = -ah * Math.PI / 180 * 0.35;
         target.object3D.rotation.x = -av * Math.PI / 180 * 0.35;

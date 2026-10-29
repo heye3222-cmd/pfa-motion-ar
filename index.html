@@ -188,7 +188,7 @@
   }
   // 어둠 경계가 곧은 선이 아니라 부드럽게 일렁이도록. 경계가 움직이면 결도 같이 흐른다
   float wobble(float y, float edge) {
-    return 0.035 * sin(y * 7.0 + edge * 5.0) + 0.018 * sin(y * 17.0 - edge * 3.0 + 1.3);
+    return 0.008 * sin(y * 7.0 + edge * 5.0) + 0.004 * sin(y * 17.0 - edge * 3.0 + 1.3);   // 아주 약하게 (크면 꿀렁거림)
   }
   float hash(float n) { return fract(sin(n * 91.345) * 47453.21); }
   // 문구 잉크 (종이보다 어두운 정도). 왼쪽 문구 열 안에서만
@@ -273,7 +273,8 @@
       float pre = (1.0 - smoothstep(0.25, 0.75, occW)) * smoothstep(0.0, 0.6, lead);
       // 빛이 막 닿은 곳: 낮게 스치는 빛이라 그림자가 길고 흐림 -> 빛이 차오르면 짧아지며 또렷하게 자리 잡음
       float settle = uSettle * (1.0 - smoothstep(0.15, 0.9, m));
-      float s = uStretch * uStretchMul * (1.0 + 0.45 * pre + 0.35 * settle);
+      // 길이는 화면 전체에 똑같이만 바뀜 (자리마다 다르게 늘이면 그림자가 휘어 꿀렁거림 -> 빛 경계·어둠 앞은 흐림만)
+      float s = uStretch * uStretchMul;
       float xs = X0 + (p.x - X0) / s;
       // 그림자 기울기: 기준선에서 멀어질수록 위/아래로 (AE Corner Pin 기울기와 같은 식)
       vec2 q = vec2(xs, p.y - uShear * (xs - X0) / uA);
@@ -431,7 +432,7 @@
     { key: 'react', label: '각도 반응 (낮을수록 흔들림 적음)', min: 2, max: 20, step: 1, def: 8, fmt: times },
     { group: '그림자 회전' },
     { key: 'rotMax', label: '그림자가 도는 최대 각도', min: 0, max: 75, step: 1, def: 50, fmt: deg },
-    { key: 'rotLight', label: '빛 위치가 함께 도는 정도', min: 0, max: 1, step: 0.05, def: 0.6, fmt: pct },
+    { key: 'rotLight', label: '빛 위치가 함께 도는 정도', min: 0, max: 1, step: 0.05, def: 0.3, fmt: pct },
     { group: '시작 장면' },
     { key: 'introHold', label: '처음 어둠이 머무는 시간', min: 0, max: 3, step: 0.1, def: 0.8, fmt: (v) => v.toFixed(1) + '초' },
     { key: 'introDur', label: '빛이 들어오는 시간', min: 1.5, max: 8, step: 0.1, def: 3.7, fmt: (v) => v.toFixed(1) + '초' },
@@ -703,7 +704,7 @@
       // 여기에 원래의 위아래 보기 기울기와 옆으로 비켜설수록 조금 길어지는 것을 더함
       const rot = cfg.rotMax * Math.PI / 180 * K.rot(shownT);
       mat.uniforms.uShear.value = Math.max(-2.5, Math.min(2.5, Math.tan(rot) + Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear));
-      mat.uniforms.uStretchMul.value = (1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max)) * (1 + (1 / Math.cos(rot) - 1) * 0.8);
+      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);   // 회전 중 길이 보정은 뺌 (길이가 펌프질하듯 변함)
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
         target.object3D.rotation.y = -ah * Math.PI / 180 * cfg.tilt;
         target.object3D.rotation.x = -av * Math.PI / 180 * cfg.tilt;

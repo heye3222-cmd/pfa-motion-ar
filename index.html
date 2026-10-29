@@ -15,6 +15,7 @@
   html.running, html.running body { background: transparent; }  /* AR: 카메라 영상(z-index -2)이 보이도록 */
   html.web, html.web body { background: #fff; }   /* 화면 보기: 흰 벽 위에 걸린 것처럼 -> 포스터 밖 그늘·그림자가 보임 */
   a-scene { position: fixed; inset: 0; }
+  .a-enter-vr, .a-enter-ar { display: none !important; }   /* A-Frame 기본 VR/AR 버튼 (설정 버튼과 겹침) */
   .layer { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; pointer-events: none;
            padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) env(safe-area-inset-bottom, 0px) max(16px, env(safe-area-inset-left, 0px)); }
 
@@ -55,6 +56,29 @@
   #meter .bar i { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--text); left: 50%; }
   #meter .row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
 
+  /* 설정 패널: 오른쪽 아래 조절 버튼 -> 슬라이더 목록 */
+  #gear { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); z-index: 12;
+          width: 44px; height: 44px; border-radius: 50%; border: 0; padding: 0; background: var(--veil); color: var(--text); cursor: pointer;
+          display: grid; place-items: center; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  #gear svg { width: 22px; height: 22px; }
+  #gear:focus-visible, #panel button:focus-visible { outline: 2px solid var(--wall); outline-offset: 2px; }
+  #panel { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(76px + env(safe-area-inset-bottom, 0px)); z-index: 12;
+           width: min(320px, calc(100vw - 32px)); max-height: calc(100dvh - 120px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y;
+           box-sizing: border-box; background: rgba(13,13,14,.88); color: var(--text); border-radius: 14px; padding: 14px 16px 16px; font-size: 13px;
+           backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  #panel h2 { margin: 0; font-size: 15px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  #panel .close { background: none; border: 0; color: var(--muted); font: inherit; font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+  #panel h3 { margin: 18px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+  #panel label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 10px 0 0; }
+  #panel label span + span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #panel input[type=range] { grid-column: 1 / -1; width: 100%; margin: 4px 0 0; accent-color: var(--text); }
+  #panel .foot { display: flex; gap: 8px; margin-top: 18px; }
+  #panel .foot button { flex: 1; font: inherit; font-weight: 600; border-radius: 999px; padding: 9px 12px; cursor: pointer; border: 0; }
+  #panel .foot .reset { background: transparent; color: var(--text); box-shadow: inset 0 0 0 1px rgba(242,242,240,.35); }
+  #panel .foot .copy { background: var(--text); color: var(--ink); }
+  #panel .note { margin: 10px 0 0; color: var(--muted); font-size: 12px; word-break: break-all; }
+  #panel .note:empty { display: none; }
+
   #err { background: var(--ink); pointer-events: auto; text-align: center; }
   #err p { max-width: 300px; margin: 0; color: var(--muted); }
   #err strong { display: block; color: var(--text); margin-bottom: 8px; font-size: 16px; }
@@ -82,6 +106,18 @@
 <div id="meter" hidden>
   <div class="row"><span>왼쪽·위 · 시작</span><span id="meterVal">0°</span><span>오른쪽·아래 · 끝</span></div>
   <div class="bar"><i id="meterKnob"></i></div>
+</div>
+
+<button id="gear" type="button" aria-label="설정 열기" aria-expanded="false" aria-controls="panel" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+    <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>
+  </svg>
+</button>
+<div id="panel" role="dialog" aria-label="설정" hidden>
+  <h2>설정 <button class="close" type="button" aria-label="설정 닫기">×</button></h2>
+  <div id="panelBody"></div>
+  <div class="foot"><button class="reset" type="button">기본값</button><button class="copy" type="button">링크 복사</button></div>
+  <p class="note" id="panelNote" aria-live="polite"></p>
 </div>
 
 <div class="layer" id="err" hidden>
@@ -121,6 +157,7 @@
   uniform vec2 uDrift;            // 광원의 아주 작은 흔들림 (가만히 있어도 살아 있게)
   uniform float uWarm;            // 빛 경계의 따뜻한 기운 (0 = 끔)
   uniform float uM;               // 판이 포스터보다 사방으로 큰 폭 (W 단위). 바깥은 어두울 때만 벽으로 번지는 그늘
+  uniform float uDrop, uTrail;    // 떠 있는 그림자 진하기, 문구 꼬리 최대 길이 (설정 패널)
   varying vec2 vUv;
 
   const float X0 = 0.09;          // 왼쪽 세로 텍스트 열 경계 = 그림자가 늘어나는 기준선
@@ -162,7 +199,7 @@
   }
   // 그림자처럼 끌리며 사라지는 문구: 보는 방향(빛 반대쪽)으로 꼬리가 길어지고, 길어질수록 잉크가 옅어지고 번짐
   float textTrail(vec2 p, float q, float lod) {
-    vec2 off = uSweep * (0.16 * q) / vec2(1.0, uA);
+    vec2 off = uSweep * (uTrail * q) / vec2(1.0, uA);
     float acc = 0.0, wsum = 0.0;
     for (int i = 0; i < 8; i++) {
       float f = float(i) / 7.0, w = 1.0 - 0.7 * f;
@@ -212,7 +249,7 @@
     //   qT = 사라지는 정도 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
     //   꼬리는 문구 열 밖 벽까지 이어지므로 열 오른쪽 일부도 함께 계산
     float qT = 0.0, qC = 0.0;
-    bool nearCol = p.x < X0 + 0.16 * uSweep.x + 1e-3;
+    bool nearCol = p.x < X0 + uTrail * uSweep.x + 1e-3;
     if (nearCol) {
       float cell = 0.045, id = floor(p.y / cell), f = fract(p.y / cell), xc = min(p.x, 0.045);
       float qa = textSink(id - 1.0, cell, xc), qb = textSink(id, cell, xc), qc = textSink(id + 1.0, cell, xc);
@@ -300,7 +337,7 @@
       // 빛을 받는 동안 포스터가 벽에서 살짝 떠 있는 것처럼: 빛이 오는 반대쪽 벽에 옅고 부드러운 그림자
       vec2 sq = pw - uSweep * 0.022;
       float sd = max(max(-sq.x, sq.x - 1.0), max(-sq.y, sq.y - uA));
-      float dropShadow = (1.0 - smoothstep(-0.012, 0.028, sd)) * lit * 0.32;
+      float dropShadow = (1.0 - smoothstep(-0.012, 0.028, sd)) * lit * uDrop;
       gl_FragColor = vec4(0.0, 0.0, 0.0, max(spill, dropShadow) * uOpacity);
       return;
     }
@@ -326,6 +363,7 @@
 <script id="dustVert" type="x-shader/x-vertex">
   attribute float aSeed;
   uniform float uTime, uA, uOcc, uLevel, uIntensity, uOpacity, uPx;
+  uniform float uDustGain, uDustSize;   // 먼지 밝기, 크기 배율 (설정 패널)
   uniform vec4 uLight;
   uniform vec2 uLight2, uSweep, uDrift, uStir;
   varying float vA;
@@ -355,10 +393,10 @@
     // 먼지가 돌면서 빛을 받았다 놓쳤다 함
     float tw = 0.5 + 0.5 * sin(t * (0.7 + 1.9 * fract(s * 11.0)) + s * 60.0);
     float edge = smoothstep(0.0, 0.04, min(min(P.x, 1.0 - P.x), min(P.y, uA - P.y)));
-    vA = lit * (0.2 + 0.8 * tw * tw) * edge * uOpacity;
+    vA = lit * (0.2 + 0.8 * tw * tw) * edge * uOpacity * uDustGain;
 
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
-    gl_PointSize = max(1.5, (0.003 + 0.005 * fract(s * 5.3)) * uPx / -mv.z);
+    gl_PointSize = max(1.5, (0.003 + 0.005 * fract(s * 5.3)) * uDustSize * uPx / -mv.z);
     gl_Position = projectionMatrix * mv;
   }
 </script>
@@ -374,17 +412,50 @@
 <script>
   // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽·위 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽·아래 끝 = 끝(어둠 + 심볼)
   // 빛과 어둠은 보는 쪽에서 들어온다: 좌우로 비켜서면 가로로, 위아래로 비켜서면 세로로 지나감
-  // 주소 옵션: ?max=30 (좌우로 어둠이 다 차는 각도, 기본 22) / ?vmax=25 (위아래, 기본 18) / ?flip=1 (좌우 반대)
-  //            ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정) / ?warm=0 (빛 경계 따뜻한 기운 끔)
-  // 각도는 피드백 반영(2026-10-29): 크게 돌리지 않아도 끝까지 가도록 30°/25° -> 22°/18°
+  // 조절값은 아래 SETTINGS 한 곳에 모여 있고, 화면 오른쪽 아래 톱니바퀴 패널에서 바로 바꿀 수 있다.
+  // 바꾼 값은 이 기기에 저장되고, '링크 복사'로 같은 값이 담긴 주소를 팀원에게 보낼 수 있다 (?max=25&dust=1.5 처럼).
+  // 그 밖의 주소 옵션: ?flip=1 (좌우 반대) / ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
   const q = new URLSearchParams(location.search);
-  const MAX_DEG = +q.get('max') || 22;
-  const MAX_V = +q.get('vmax') || 18;             // 위아래는 움직일 수 있는 폭이 좁아서 조금 작게
+  const pct = (v) => Math.round(v * 100) + '%', deg = (v) => v + '°', times = (v) => '×' + (+v).toFixed(1);
+  const SETTINGS = [
+    { group: '보기' },
+    { key: 'size', label: '포스터 크기 (화면 보기)', min: 0.5, max: 1.6, step: 0.05, def: 1, fmt: pct },
+    { key: 'arFit', label: '포스터 겹침 크기 (AR)', min: 0.9, max: 1.1, step: 0.005, def: 1, fmt: (v) => (v * 100).toFixed(1) + '%' },
+    { key: 'tilt', label: '기울어 보이는 정도 (화면 보기)', min: 0, max: 0.6, step: 0.05, def: 0.2, fmt: pct },
+    { group: '각도' },
+    { key: 'max', label: '좌우 끝 각도', min: 8, max: 45, step: 1, def: 22, fmt: deg },
+    { key: 'vmax', label: '위아래 끝 각도', min: 8, max: 45, step: 1, def: 18, fmt: deg },
+    { group: '속도' },
+    { key: 'follow', label: '장면이 따라오는 속도', min: 1, max: 15, step: 0.5, def: 6, fmt: times },
+    { key: 'speed', label: '장면 최대 속도', min: 0.5, max: 10, step: 0.5, def: 4, fmt: (v) => v + '초/초' },
+    { key: 'react', label: '각도 반응 (낮을수록 흔들림 적음)', min: 2, max: 20, step: 1, def: 8, fmt: times },
+    { group: '빛' },
+    { key: 'breath', label: '빛 숨쉬기 세기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'breathSpeed', label: '빛 숨쉬기 속도', min: 0.2, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'warm', label: '빛 경계 따뜻함', min: 0, max: 1.5, step: 0.05, def: 0.6, fmt: times },
+    { group: '먼지' },
+    { key: 'dust', label: '먼지 밝기', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'dustSize', label: '먼지 크기', min: 0.3, max: 3, step: 0.1, def: 1, fmt: times },
+    { key: 'dustSpeed', label: '먼지 떠다니는 속도', min: 0, max: 4, step: 0.1, def: 1, fmt: times },
+    { key: 'stir', label: '움직일 때 휘날림', min: 0, max: 3, step: 0.1, def: 1, fmt: times },
+    { group: '그림자 · 문구' },
+    { key: 'shear', label: '그림자 기울기 (위아래로 볼 때)', min: 0, max: 0.8, step: 0.05, def: 0.35, fmt: times },
+    { key: 'drop', label: '떠 있는 그림자 진하기', min: 0, max: 1, step: 0.02, def: 0.32, fmt: pct },
+    { key: 'trail', label: '문구 꼬리 길이', min: 0, max: 0.4, step: 0.01, def: 0.16, fmt: pct },
+  ].map((s) => s.key ? { ...s, fmt: s.fmt || String } : s);
+  const STORE = 'pfa-motion-ar-settings';
+  const cfg = {};
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) {}
+  for (const s of SETTINGS) if (s.key) {                // 주소 > 이 기기에 저장된 값 > 기본값
+    const v = q.has(s.key) ? +q.get(s.key) : saved[s.key];
+    cfg[s.key] = Number.isFinite(v) ? Math.min(s.max, Math.max(s.min, v)) : s.def;
+  }
+
   const FLIP = q.get('flip') === '1';
   const DEBUG = q.get('debug') === '1';
   const FIXED_T = q.has('t') ? +q.get('t') : null;
   const T_LEFT = 0.6, T_FRONT = 4.0, T_RIGHT = 7.6;
-  const MAX_SPEED = 4.0;                          // 모션 시간 기준 초/초: 손떨림이나 인식 튐에도 장면이 확 바뀌지 않게
 
   // ---- AE 키프레임 (시간, 값, 나가는/들어오는 영향력 %) 그대로 ----
   function bezier(x1, x2) {                       // cubic-bezier(x1, 0, x2, 1)
@@ -439,7 +510,7 @@
   const scene = $('scene'), plane = $('motionPlane'), target = $('target');
   const goAR = $('goAR'), goWeb = $('goWeb'), start = $('start'), scan = $('scan'), pill = $('pill'), err = $('err');
   const THREE = AFRAME.THREE;
-  let mat = null, mode = null, tracking = false, shownT = T_LEFT, ah = -MAX_DEG, av = 0, fadeRaf = 0;
+  let mat = null, mode = null, tracking = false, shownT = T_LEFT, ah = -cfg.max, av = 0, fadeRaf = 0;
 
   function setTime(t) {
     if (!mat) return;
@@ -473,7 +544,7 @@
           uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
           uAmbGain: { value: +q.get('amb') || 1 }, uOpacity: { value: 0 },
           uSettle: { value: 0 }, uIntensity: { value: 1 }, uDrift: { value: new THREE.Vector2() },
-          uWarm: { value: q.has('warm') ? +q.get('warm') : 0.6 }, uM: { value: 0.06 },
+          uWarm: { value: cfg.warm }, uM: { value: 0.06 }, uDrop: { value: cfg.drop }, uTrail: { value: cfg.trail },
         },
       });
       plane.getObject3D('mesh').material = mat;
@@ -503,10 +574,23 @@
         uA: u.uA, uOcc: u.uOcc, uLevel: u.uLevel, uIntensity: u.uIntensity, uOpacity: u.uOpacity,
         uLight: u.uLight, uLight2: u.uLight2, uSweep: u.uSweep, uDrift: u.uDrift,
         uTime: { value: 0 }, uPx: { value: 800 }, uStir: { value: new THREE.Vector2() },
+        uDustGain: { value: cfg.dust }, uDustSize: { value: cfg.dustSize },
       },
     }));
     dust.frustumCulled = false; dust.renderOrder = 2;
     target.object3D.add(dust);
+  }
+
+  // 설정값 중 셰이더·크기에 바로 들어가는 것들 반영 (나머지는 매 프레임 cfg에서 직접 읽음)
+  function applyCfg() {
+    if (!mat) return;
+    const u = mat.uniforms;
+    u.uWarm.value = cfg.warm; u.uDrop.value = cfg.drop; u.uTrail.value = cfg.trail;
+    if (dust) { dust.material.uniforms.uDustGain.value = cfg.dust; dust.material.uniforms.uDustSize.value = cfg.dustSize; }
+    const f = mode === 'ar' ? cfg.arFit : 1;
+    plane.object3D.scale.set(f, f, 1);
+    if (dust) dust.scale.set(f, f, f);
+    if (mode === 'web') fitPoster();
   }
 
   const loaded = new Promise((r) => scene.hasLoaded ? r() : scene.addEventListener('loaded', r, { once: true }))
@@ -530,7 +614,7 @@
 
   // 좌우(왼쪽 = 시작, 오른쪽 = 끝)와 위아래(위 = 시작, 아래 = 끝)를 합친 진행 정도 -1 ~ 1.
   // 왼쪽 아래처럼 서로 반대인 대각선은 상쇄돼 밝은 쪽에 머문다
-  function progress(h, v) { return Math.max(-1, Math.min(1, h / MAX_DEG + v / MAX_V)); }
+  function progress(h, v) { return Math.max(-1, Math.min(1, h / cfg.max + v / cfg.vmax)); }
   function timeFor(h, v) {
     const u = progress(h, v);
     return u < 0 ? T_FRONT + u * (T_FRONT - T_LEFT) : T_FRONT + u * (T_RIGHT - T_FRONT);
@@ -555,47 +639,49 @@
     webV = tiltZero[1] - e.beta;                  // 윗변을 뒤로 젖히면 아래에서 올려다보는 것과 같음
   }
   function onPointer(e) {
-    if (usingTilt) return;
-    webH = (e.clientX / innerWidth * 2 - 1) * MAX_DEG * 1.15;
-    webV = (e.clientY / innerHeight * 2 - 1) * MAX_V * 1.15;
+    if (usingTilt || (e.target.closest && e.target.closest('#panel, #gear'))) return;   // 설정 패널 위에서는 각도 그대로
+    webH = (e.clientX / innerWidth * 2 - 1) * cfg.max * 1.15;
+    webV = (e.clientY / innerHeight * 2 - 1) * cfg.vmax * 1.15;
   }
 
-  let last = performance.now(), vel = 0, prevH = 0, prevV = 0;
+  let last = performance.now(), vel = 0, prevH = 0, prevV = 0, breathT = 0, dustT = 0;
   function tick(now) {
     const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = Math.max(last, now);
     if (tracking && mat) {
       const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
-      const k = 1 - Math.exp(-dt * 8);                                     // 흔들림 완화
+      const k = 1 - Math.exp(-dt * cfg.react);                             // 흔들림 완화
       ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
       // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
-      const want = FIXED_T ?? timeFor(ah, av), W = 6;
+      const want = FIXED_T ?? timeFor(ah, av), W = cfg.follow;
       vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
-      vel = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, vel));
+      vel = Math.max(-cfg.speed, Math.min(cfg.speed, vel));
       shownT = Math.max(0, Math.min(7.99, shownT + vel * dt));
       setTime(shownT);
       // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
-      const s = now / 1000;
-      mat.uniforms.uIntensity.value *= 1 + 0.012 * Math.sin(s * 1.1) + 0.008 * Math.sin(s * 2.7 + 1);
-      mat.uniforms.uDrift.value.set(0.008 * Math.sin(s * 0.37), 0.006 * Math.sin(s * 0.53 + 2));
+      // (속도를 바꿔도 튀지 않게 시간을 따로 누적)
+      breathT += dt * cfg.breathSpeed; dustT += dt * cfg.dustSpeed;
+      const b = breathT;
+      mat.uniforms.uIntensity.value *= 1 + cfg.breath * (0.012 * Math.sin(b * 1.1) + 0.008 * Math.sin(b * 2.7 + 1));
+      mat.uniforms.uDrift.value.set(0.008 * Math.sin(b * 0.37), 0.006 * Math.sin(b * 0.53 + 2)).multiplyScalar(cfg.breath);
       if (dust) {
         const du = dust.material.uniforms, cam = scene.camera;
-        du.uTime.value = s;
+        du.uTime.value = dustT;
         du.uPx.value = scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
         // 각도가 빨리 바뀐 만큼 공기가 흔들림 -> 천천히 가라앉음
-        const kick = (x) => Math.max(-0.03, Math.min(0.03, x));
+        const kick = (x) => Math.max(-0.03, Math.min(0.03, x)) * cfg.stir;
         du.uStir.value.x += (kick(-(ah - prevH) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.x) * (1 - Math.exp(-dt * 3));
         du.uStir.value.y += (kick((av - prevV) / Math.max(dt, 1e-3) * 0.0008) - du.uStir.value.y) * (1 - Math.exp(-dt * 3));
       }
       prevH = ah; prevV = av;
       // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
-      const sx = Math.abs(ah) / MAX_DEG + 0.02, sy = Math.abs(av) / MAX_V, n = Math.hypot(sx, sy);
+      const sx = Math.abs(ah) / cfg.max + 0.02, sy = Math.abs(av) / cfg.vmax, n = Math.hypot(sx, sy);
       mat.uniforms.uSweep.value.set(sx / n, sy / n);
-      // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고 (최대 약 19°), 옆으로 비켜설수록 조금 더 길어짐
-      mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / MAX_V)) * 0.35;
-      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / MAX_DEG);
+      // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고, 옆으로 비켜설수록 조금 더 길어짐
+      mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear;
+      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
-        target.object3D.rotation.y = -ah * Math.PI / 180 * 0.2;
-        target.object3D.rotation.x = -av * Math.PI / 180 * 0.2;
+        target.object3D.rotation.y = -ah * Math.PI / 180 * cfg.tilt;
+        target.object3D.rotation.x = -av * Math.PI / 180 * cfg.tilt;
       }
       if (DEBUG) {
         $('meterVal').textContent = `좌우 ${ah.toFixed(0)}° · 위아래 ${av.toFixed(0)}° · ${shownT.toFixed(2)}s`;
@@ -630,7 +716,8 @@
     try {
       await scene.systems['mindar-image-system'].start();
       document.documentElement.classList.add('running');
-      start.hidden = true; scan.hidden = false; pill.hidden = false;
+      start.hidden = true; scan.hidden = false; pill.hidden = false; gear.hidden = false;
+      applyCfg();
     } catch (e) {
       start.hidden = true; err.hidden = false;
       $('errMsg').textContent = (location.protocol !== 'https:' && location.hostname !== 'localhost')
@@ -644,7 +731,7 @@
     const cam = $('cam').getObject3D('camera');
     const fov = cam.fov * Math.PI / 180, aspect = innerWidth / innerHeight;
     const h = 1.4151 * 1.12, w = 1 * 1.12;                  // 여백 조금
-    const d = Math.max(h / 2 / Math.tan(fov / 2), w / 2 / Math.tan(fov / 2) / aspect);
+    const d = Math.max(h / 2 / Math.tan(fov / 2), w / 2 / Math.tan(fov / 2) / aspect) / cfg.size;
     target.object3D.position.set(0, 0, -d);
   }
   goWeb.addEventListener('click', async () => {
@@ -661,10 +748,39 @@
     addEventListener('resize', fitPoster);
     const o = target.object3D;
     o.matrixAutoUpdate = true; o.visible = true;
-    fitPoster();
-    start.hidden = true;
+    applyCfg();
+    start.hidden = true; gear.hidden = false;
     if (DEBUG) $('meter').hidden = false;
     onFound();
+  });
+
+  // ---- 설정 패널: 슬라이더를 움직이면 바로 반영되고 이 기기에 저장됨 ----
+  const panel = $('panel'), gear = $('gear'), note = $('panelNote'), inputs = {};
+  for (const s of SETTINGS) {
+    if (s.group) { const h = document.createElement('h3'); h.textContent = s.group; $('panelBody').appendChild(h); continue; }
+    const row = document.createElement('label'), name = document.createElement('span'), val = document.createElement('span');
+    const r = document.createElement('input');
+    Object.assign(r, { type: 'range', min: s.min, max: s.max, step: s.step, value: cfg[s.key] });
+    name.textContent = s.label; val.textContent = s.fmt(cfg[s.key]);
+    r.addEventListener('input', () => { cfg[s.key] = +r.value; val.textContent = s.fmt(cfg[s.key]); note.textContent = ''; applyCfg(); saveCfg(); });
+    row.append(name, val, r); $('panelBody').appendChild(row);
+    inputs[s.key] = { r, val, s };
+  }
+  function saveCfg() { try { localStorage.setItem(STORE, JSON.stringify(cfg)); } catch (e) {} }
+  function setPanel(open) { panel.hidden = !open; gear.setAttribute('aria-expanded', String(open)); }
+  gear.addEventListener('click', () => setPanel(panel.hidden));
+  panel.querySelector('.close').addEventListener('click', () => { setPanel(false); gear.focus(); });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { setPanel(false); gear.focus(); } });
+  panel.querySelector('.reset').addEventListener('click', () => {
+    for (const k in inputs) { const { r, val, s } = inputs[k]; cfg[k] = s.def; r.value = s.def; val.textContent = s.fmt(s.def); }
+    applyCfg(); saveCfg(); note.textContent = '기본값으로 돌렸어요';
+  });
+  // 기본값과 다른 것만 주소에 담아 복사 -> 팀원이 열면 같은 설정으로 보임
+  panel.querySelector('.copy').addEventListener('click', async () => {
+    const url = new URL(location.href);
+    for (const k in inputs) { if (cfg[k] !== inputs[k].s.def) url.searchParams.set(k, cfg[k]); else url.searchParams.delete(k); }
+    try { await navigator.clipboard.writeText(url.href); note.textContent = '지금 설정이 담긴 링크를 복사했어요'; }
+    catch (e) { note.textContent = url.href; }       // 복사가 막힌 브라우저에서는 주소를 보여줘서 직접 복사
   });
 
   target.addEventListener('targetFound', onFound);

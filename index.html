@@ -429,6 +429,9 @@
     { key: 'follow', label: '장면이 따라오는 속도', min: 1, max: 15, step: 0.5, def: 6, fmt: times },
     { key: 'speed', label: '장면 최대 속도', min: 0.5, max: 10, step: 0.5, def: 4, fmt: (v) => v + '초/초' },
     { key: 'react', label: '각도 반응 (낮을수록 흔들림 적음)', min: 2, max: 20, step: 1, def: 8, fmt: times },
+    { group: '그림자 회전' },
+    { key: 'rotMax', label: '그림자가 도는 최대 각도', min: 0, max: 75, step: 1, def: 50, fmt: deg },
+    { key: 'rotLight', label: '빛 위치가 함께 도는 정도', min: 0, max: 1, step: 0.05, def: 0.6, fmt: pct },
     { group: '시작 장면' },
     { key: 'introHold', label: '처음 어둠이 머무는 시간', min: 0, max: 3, step: 0.1, def: 0.8, fmt: (v) => v.toFixed(1) + '초' },
     { key: 'introDur', label: '빛이 들어오는 시간', min: 1.5, max: 8, step: 0.1, def: 3.7, fmt: (v) => v.toFixed(1) + '초' },
@@ -507,6 +510,9 @@
     // 빛이 들어오는 동안: 막 닿은 곳의 그림자가 길고 흐리다가 3초쯤 제자리로 / 빛 세기도 82% -> 100%로 차오름
     settle: key(0.6, 1, 3.2, 0, 33, 60),
     intensity: key(0.3, 0.82, 3.0, 1, 40, 60),
+    // 그림자 회전 (교수님 크리틱): 빛을 따라 그림자가 쭉 돌며 휘감고 들어옴.
+    // 1 = 빛이 왼쪽 위에서 -> 그림자가 오른쪽 아래로 기욺 / 0 = 원래 포스터(가로) / -1 = 빛이 왼쪽 아래로 빠짐 -> 그림자가 위로
+    rot: points([[0.3, 1], [4.0, 0], [5.4, 0], [7.6, -1]]),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -518,7 +524,8 @@
   function setTime(t, intro = false) {
     if (!mat) return;
     const u = mat.uniforms;
-    u.uLight.value.set(K.cx(t), 0.5, K.rx(t), K.ry(t));
+    // 빛 중심도 그림자 회전을 따라 위(들어올 때) -> 가운데 -> 아래(빠질 때)로
+    u.uLight.value.set(K.cx(t), 0.5 - 0.35 * cfg.rotLight * K.rot(t), K.rx(t), K.ry(t));
     u.uLight2.value.set(K.fe(t), K.hot(t));
     u.uStretch.value = K.stretch(t); u.uSoft.value = K.soft(t); u.uDir.value = K.dir(t);
     u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
@@ -692,9 +699,11 @@
       const sx = Math.abs(ah) / cfg.max + 0.02, sy = Math.abs(av) / cfg.vmax, n = Math.hypot(sx, sy);
       if (introT >= 0) mat.uniforms.uSweep.value.set(1, 0);   // 시작 장면의 빛은 포스터 원래대로 왼쪽에서
       else mat.uniforms.uSweep.value.set(sx / n, sy / n);
-      // 그림자: 위에서 보면 아래로, 아래에서 보면 위로 기울고, 옆으로 비켜설수록 조금 더 길어짐
-      mat.uniforms.uShear.value = Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear;
-      mat.uniforms.uStretchMul.value = 1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max);
+      // 그림자 회전: 모션 시간을 따라 밑동을 축으로 돎 (기울기 = tan 각도, 길이는 1/cos 만큼 보정해 도는 동안 짧아지지 않게)
+      // 여기에 원래의 위아래 보기 기울기와 옆으로 비켜설수록 조금 길어지는 것을 더함
+      const rot = cfg.rotMax * Math.PI / 180 * K.rot(shownT);
+      mat.uniforms.uShear.value = Math.max(-2.5, Math.min(2.5, Math.tan(rot) + Math.max(-1, Math.min(1, -av / cfg.vmax)) * cfg.shear));
+      mat.uniforms.uStretchMul.value = (1 + 0.15 * Math.min(1, Math.abs(ah) / cfg.max)) * (1 + (1 / Math.cos(rot) - 1) * 0.8);
       if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
         target.object3D.rotation.y = -ah * Math.PI / 180 * cfg.tilt;
         target.object3D.rotation.x = -av * Math.PI / 180 * cfg.tilt;

@@ -93,8 +93,9 @@
   vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" embedded>
   <a-camera id="cam" position="0 0 0" look-controls="enabled: false" wasd-controls="enabled: false"></a-camera>
   <a-entity id="target" mindar-image-target="targetIndex: 0">
-    <!-- 포스터 폭 = 1, 높이 = 3000/2120 (A1). 모션은 아래 셰이더가 포스터 이미지로 매 프레임 그린다 -->
-    <a-plane id="motionPlane" width="1" height="1.4151" position="0 0 0"></a-plane>
+    <!-- 포스터 폭 = 1, 높이 = 3000/2120 (A1). 판은 사방 0.06씩 더 커서 어두울 때 그늘이 벽으로 번진다.
+         모션은 아래 셰이더가 포스터 이미지로 매 프레임 그린다 -->
+    <a-plane id="motionPlane" width="1.12" height="1.5351" position="0 0 0"></a-plane>
   </a-entity>
 </a-scene>
 
@@ -114,6 +115,11 @@
   uniform float uLevel;           // 마지막 암전 (1 -> 0)
   uniform float uSymA, uTailA, uSymScale;
   uniform float uAmbGain, uOpacity;
+  uniform float uSettle;          // 빛이 들어오는 동안 1 -> 0: 빛이 막 닿은 곳의 그림자가 길고 흐리다가 제자리로
+  uniform float uIntensity;       // 빛 세기 (들어오며 조금씩 차오름 + 아주 느린 숨쉬기)
+  uniform vec2 uDrift;            // 광원의 아주 작은 흔들림 (가만히 있어도 살아 있게)
+  uniform float uWarm;            // 빛 경계의 따뜻한 기운 (0 = 끔)
+  uniform float uM;               // 판이 포스터보다 사방으로 큰 폭 (W 단위). 바깥은 어두울 때만 벽으로 번지는 그늘
   varying vec2 vUv;
 
   const float X0 = 0.09;          // 왼쪽 세로 텍스트 열 경계 = 그림자가 늘어나는 기준선
@@ -154,7 +160,9 @@
   }
 
   void main() {
-    vec2 p = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 pw = vec2(vUv.x * (1.0 + 2.0 * uM) - uM, (1.0 - vUv.y) * (uA + 2.0 * uM) - uM);
+    float outside = max(max(-pw.x, pw.x - 1.0), max(-pw.y, pw.y - uA));   // > 0 이면 포스터 바깥 (W 단위 거리)
+    vec2 p = clamp(vec2(pw.x, pw.y / uA), 0.0, 1.0);
     vec2 P = vec2(p.x, p.y * uA);
     float base = lodAuto(p);
 
@@ -169,6 +177,17 @@
 
     // 오른쪽(또는 아래)에서 오는 어둠의 정도. 경계는 일렁임
     float occW = band(uOcc, u + wobble(S.y, uOcc));
+
+    // 빛(직사광): 타원 안쪽 + 그 앞으로 길게 번지는 옅은 빛. 벽에 실제로 빛이 닿을 때처럼 경계가 한 줄로 끊기지 않게
+    vec2 c = uLight.xy * vec2(L, Lp) + uDrift * L;
+    vec2 d = S - c;
+    float k = length(d / (uLight.zw * vec2(L, Lp)));
+    float dist = length(d) * (1.0 - 1.0 / max(k, 1e-4));
+    float F = uLight2.x * L;
+    float core = 1.0 - smoothstep(-F * 0.5, F * 0.5, dist);
+    float glow = 1.0 - smoothstep(-F * 0.3, F * 1.8, dist);
+    float halo = (1.0 - core) * glow * 0.12;          // 빛이 오기 전 벽 가장자리가 희미하게 밝아지는 정도
+    float m = core + halo;
 
     // 문구(왼쪽 세로 글자열): 어둠이 오는 순서대로 글자 몇 개 높이(4.5%)씩, 벽보다 조금 늦게 초점이 풀리며 가라앉음
     //   qT = 초점 풀림 (덩어리마다 살짝 다른 시점, 경계는 이웃과 섞어 계단이 안 보이게), qC = 종이 톤 (끊김 없이)
@@ -190,13 +209,15 @@
       // 어둠 바로 앞: 그림자가 먼저 길게 끌려가며 번짐
       float lead = clamp((uOcc + 0.3 - (1.0 - u)) / 0.6 + 0.5, 0.0, 1.0);   // 어둠보다 조금 앞서 가는 좁은 띠
       float pre = (1.0 - smoothstep(0.25, 0.75, occW)) * smoothstep(0.0, 0.6, lead);
-      float s = uStretch * uStretchMul * (1.0 + 0.45 * pre);
+      // 빛이 막 닿은 곳: 낮게 스치는 빛이라 그림자가 길고 흐림 -> 빛이 차오르면 짧아지며 또렷하게 자리 잡음
+      float settle = uSettle * (1.0 - smoothstep(0.15, 0.9, m));
+      float s = uStretch * uStretchMul * (1.0 + 0.45 * pre + 0.35 * settle);
       float xs = X0 + (p.x - X0) / s;
       // 그림자 기울기: 기준선에서 멀어질수록 위/아래로 (AE Corner Pin 기울기와 같은 식)
       vec2 q = vec2(xs, p.y - uShear * (xs - X0) / uA);
-      float lod = max(base, log2(1.0 + (uSoft * map + 0.012 * pre) * uTexSize.y * 0.7));
+      float lod = max(base, log2(1.0 + (uSoft * map + 0.012 * pre + 0.01 * settle) * uTexSize.y * 0.7));
       vec2 dir = normalize(vec2(1.0, uShear / uA));
-      float spread = (uDir + 0.03 * pre) * uA;      // 방향 블러 길이 (그림자 방향, W 단위)
+      float spread = (uDir + 0.03 * pre + 0.02 * settle) * uA;   // 방향 블러 길이 (그림자 방향, W 단위)
       col = vec3(0.0);
       for (int i = 0; i < 7; i++) {
         vec2 o = dir * (float(i) / 6.0 - 0.5) * spread;
@@ -205,8 +226,11 @@
       col /= 7.0;
     }
 
+    // 1-1) 빛이 약한 곳은 그림자 대비도 약함: 그림자가 빛과 함께 또렷해짐
+    float wallTone = tex(p, log2(0.02 * uTexSize.y)).r;
+    col = mix(vec3(wallTone), col, 0.3 + 0.7 * smoothstep(0.05, 0.75, m));
+
     // 2) 광원 쪽 하이라이트 (스크린 30%)
-    vec2 c = uLight.xy * vec2(L, Lp);
     float ramp = 1.0 - clamp(length(S - c) / (uLight2.y * L), 0.0, 1.0);
     col = 1.0 - (1.0 - col) * (1.0 - 0.3 * ramp);
 
@@ -233,14 +257,21 @@
       col = mix(col, amb, occ);
     }
 
-    // 4) 빛 타원 밖은 어둠
-    vec2 d = S - c;
-    float k = length(d / (uLight.zw * vec2(L, Lp)));
-    float dist = length(d) * (1.0 - 1.0 / max(k, 1e-4));
-    col *= 1.0 - smoothstep(-uLight2.x * L * 0.5, uLight2.x * L * 0.5, dist);
+    // 4) 빛이 닿은 만큼만 보임. 빛 세기는 선형광에 가깝게 섞어 어둑한 부분이 뚝 끊기지 않게
+    float lightF = (pow(core, 0.6) + halo) * uIntensity;
+    col *= lightF;
+    col *= mix(vec3(1.0), vec3(1.06, 1.0, 0.9), 4.0 * m * (1.0 - m) * uWarm);   // 빛 경계만 아주 살짝 따뜻하게
 
     // 5) 마지막 암전
     col *= uLevel;
+
+    // 포스터 밖: 포스터가 어두운 만큼만 벽 쪽으로 옅은 그늘이 번짐 (밝을 땐 투명 -> 실제 벽이 그대로 보임)
+    if (outside > 0.0) {
+      float lit = clamp(lightF * uLevel * (1.0 - 0.75 * occ), 0.0, 1.0);
+      float a = (1.0 - lit) * (1.0 - smoothstep(0.0, uM, outside)) * 0.8;
+      gl_FragColor = vec4(0.0, 0.0, 0.0, a * uOpacity);
+      return;
+    }
 
     // 6) 가운데 심볼 (암전 위에 남음): 가림 띠를 따라 오른쪽부터 드러나고, 다음 바퀴 시작에 천천히 사라짐
     vec2 sz = vec2(0.28, 0.28 * 66.0 / 246.0) * uSymScale;
@@ -317,6 +348,9 @@
     symIn: key(5.85, 0, 6.15, 0.15, 50, 50),
     symTail: key(0.0, 0.15, 1.0, 0, 33, 50),
     symScale: key(5.85, 1, 7.3, 1.04, 33, 33),
+    // 빛이 들어오는 동안: 막 닿은 곳의 그림자가 길고 흐리다가 3초쯤 제자리로 / 빛 세기도 82% -> 100%로 차오름
+    settle: key(0.6, 1, 3.2, 0, 33, 60),
+    intensity: key(0.3, 0.82, 3.0, 1, 40, 60),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -334,6 +368,7 @@
     u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
     u.uLevel.value = K.level(t);
     u.uSymA.value = K.symIn(t); u.uTailA.value = t < 1 ? K.symTail(t) : 0; u.uSymScale.value = K.symScale(t);
+    u.uSettle.value = K.settle(t); u.uIntensity.value = K.intensity(t);
   }
 
   function buildMaterial() {
@@ -355,6 +390,8 @@
           uOcc: { value: -1 }, uSymEdge: { value: -1 }, uLevel: { value: 1 },
           uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
           uAmbGain: { value: +q.get('amb') || 1 }, uOpacity: { value: 0 },
+          uSettle: { value: 0 }, uIntensity: { value: 1 }, uDrift: { value: new THREE.Vector2() },
+          uWarm: { value: q.has('warm') ? +q.get('warm') : 0.6 }, uM: { value: 0.06 },
         },
       });
       plane.getObject3D('mesh').material = mat;
@@ -412,16 +449,23 @@
     webV = (e.clientY / innerHeight * 2 - 1) * MAX_V * 1.15;
   }
 
-  let last = performance.now();
+  let last = performance.now(), vel = 0;
   function tick(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     if (tracking && mat) {
       const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
       const k = 1 - Math.exp(-dt * 8);                                     // 흔들림 완화
       ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
-      const want = FIXED_T ?? timeFor(ah, av), step = MAX_SPEED * dt;
-      shownT += Math.max(-step, Math.min(step, want - shownT));
+      // 장면은 스프링처럼 따라감: 움직이기 시작할 때와 멈출 때 덜컥거리지 않고 부드럽게 붙음
+      const want = FIXED_T ?? timeFor(ah, av), W = 6;
+      vel += (W * W * (want - shownT) - 2 * W * vel) * dt;
+      vel = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, vel));
+      shownT += vel * dt;
       setTime(shownT);
+      // 가만히 있어도 살아 있는 빛: 세기는 ±2% 안에서 아주 느리게 숨 쉬고, 광원은 포스터 폭의 1% 안에서 흔들림
+      const s = now / 1000;
+      mat.uniforms.uIntensity.value *= 1 + 0.012 * Math.sin(s * 1.1) + 0.008 * Math.sin(s * 2.7 + 1);
+      mat.uniforms.uDrift.value.set(0.008 * Math.sin(s * 0.37), 0.006 * Math.sin(s * 0.53 + 2));
       // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
       const sx = Math.abs(ah) / MAX_DEG + 0.02, sy = Math.abs(av) / MAX_V, n = Math.hypot(sx, sy);
       mat.uniforms.uSweep.value.set(sx / n, sy / n);
@@ -452,7 +496,7 @@
     setTimeout(() => { if (tracking) pill.hidden = true; }, 3000);
   }
   function onLost() {
-    tracking = false; shownT = T_LEFT;
+    tracking = false; shownT = T_LEFT; vel = 0;
     fadeTo(0, 200);
     scan.hidden = false; pill.hidden = false;
     pill.textContent = '포스터 전체가 화면에 들어오게 비춰 주세요';

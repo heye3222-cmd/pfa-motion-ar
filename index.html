@@ -65,7 +65,7 @@
   <div class="box">
     <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
     <h1>PROCESS FACTORY AUTOMATION</h1>
-    <p id="intro">포스터 앞에서 좌우로 비켜서면 빛이 들어오고 빠집니다. 정면에서 가장 밝고, 옆으로 갈수록 어둠에 잠깁니다.</p>
+    <p id="intro">포스터 앞에서 좌우나 위아래로 비켜서면 빛이 들어오고 빠집니다. 정면에서 가장 밝고, 비켜설수록 어둠에 잠깁니다.</p>
     <div class="btns">
       <button class="btn primary" id="goAR" type="button" disabled>불러오는 중…</button>
       <button class="btn ghost" id="goWeb" type="button" disabled>화면으로 보기</button>
@@ -79,7 +79,7 @@
 <div class="pill" id="pill" hidden>포스터 전체가 화면에 들어오게 비춰 주세요</div>
 
 <div id="meter" hidden>
-  <div class="row"><span>왼쪽 · 시작</span><span id="meterVal">0°</span><span>오른쪽 · 끝</span></div>
+  <div class="row"><span>왼쪽·위 · 시작</span><span id="meterVal">0°</span><span>오른쪽·아래 · 끝</span></div>
   <div class="bar"><i id="meterKnob"></i></div>
 </div>
 
@@ -105,8 +105,9 @@
   uniform sampler2D uPoster, uSymbol;
   uniform vec2 uTexSize;          // 2120, 3000
   uniform float uA;               // 높이/폭 = 1.4151
-  uniform vec4 uLight;            // 빛 타원 중심 x, y, 반지름 x, y (W 단위)
+  uniform vec4 uLight;            // 빛 타원 중심, 반지름 (지나가는 방향 길이 / 그 수직 길이 대비)
   uniform vec2 uLight2;           // 타원 경계 부드러움, 하이라이트 반지름 (W 단위)
+  uniform vec2 uSweep;            // 빛·어둠이 지나가는 방향 (시작 쪽 -> 끝 쪽). 좌우 = (1,0), 위아래 = (0,1)
   uniform float uStretch, uSoft, uDir;   // 그림자 길이 배율, 오른쪽으로 커지는 블러, 방향 블러 (포스터 높이 대비)
   uniform float uOcc, uSymEdge;   // 오른쪽에서 들어오는 가림 띠 위치 (심볼용은 0.3초 늦음)
   uniform float uLevel;           // 마지막 암전 (1 -> 0)
@@ -139,6 +140,13 @@
     vec2 p = vec2(vUv.x, 1.0 - vUv.y);
     vec2 P = vec2(p.x, p.y * uA);
     float base = lodAuto(p);
+
+    // 지나가는 방향 좌표계: S.x = 시작 쪽 가장자리부터의 거리 (0~L), S.y = 그 수직 방향 (0~Lp). 좌우일 때 S = P
+    vec2 Dp = vec2(-uSweep.y, uSweep.x);
+    float L = uSweep.x + uA * uSweep.y, Lp = abs(Dp.x) + uA * abs(Dp.y);
+    vec2 Pc = P - vec2(0.5, 0.5 * uA);
+    vec2 S = vec2(dot(Pc, uSweep) + 0.5 * L, dot(Pc, Dp) + 0.5 * Lp);
+    float u = S.x / L;
     bool inText = p.x < X0 || (p.y > 0.955 && p.x < 0.20);
 
     // 1) 포스터: 텍스트 열은 고정, 그림자는 기준선에서 오른쪽으로 늘어나며 번짐
@@ -159,12 +167,12 @@
     }
 
     // 2) 광원 쪽 하이라이트 (스크린 30%)
-    vec2 c = uLight.xy;
-    float ramp = 1.0 - clamp(length(P - c) / uLight2.y, 0.0, 1.0);
+    vec2 c = uLight.xy * vec2(L, Lp);
+    float ramp = 1.0 - clamp(length(S - c) / (uLight2.y * L), 0.0, 1.0);
     col = 1.0 - (1.0 - col) * (1.0 - 0.3 * ramp);
 
     // 3) 오른쪽에서 들어오는 가림 띠: 직사광이 가려지고 환경광만 받는 벽 (그림자 톤이 벽 전체로 퍼짐)
-    float occ = band(uOcc, p.x);
+    float occ = band(uOcc, u);
     if (occ > 0.0) {
       vec3 amb;
       if (p.x < X0) {
@@ -180,10 +188,10 @@
     }
 
     // 4) 빛 타원 밖은 어둠
-    vec2 d = P - c;
-    float k = length(d / uLight.zw);
+    vec2 d = S - c;
+    float k = length(d / (uLight.zw * vec2(L, Lp)));
     float dist = length(d) * (1.0 - 1.0 / max(k, 1e-4));
-    col *= 1.0 - smoothstep(-uLight2.x * 0.5, uLight2.x * 0.5, dist);
+    col *= 1.0 - smoothstep(-uLight2.x * L * 0.5, uLight2.x * L * 0.5, dist);
 
     // 5) 마지막 암전
     col *= uLevel;
@@ -193,7 +201,7 @@
     vec2 su = (P - vec2(0.5, 0.5 * uA)) / sz + 0.5;
     if (su.x > 0.0 && su.x < 1.0 && su.y > 0.0 && su.y < 1.0) {
       float a = texture(uSymbol, vec2(su.x, 1.0 - su.y)).a;
-      float sm = band(uSymEdge, p.x);
+      float sm = band(uSymEdge, u);
       col = mix(col, vec3(1.0), a * clamp(uSymA * sm + uTailA, 0.0, 1.0));
     }
 
@@ -206,10 +214,13 @@
 </script>
 
 <script>
-  // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽 끝 = 끝(어둠 + 심볼)
-  // 주소 옵션: ?max=35 (어둠이 다 차는 각도, 기본 30) / ?flip=1 (좌우 반대) / ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
+  // 보는 각도 -> 모션 시간 (AE 기준 초). 왼쪽·위 끝 = 시작(어둠), 정면 = 밝은 포스터, 오른쪽·아래 끝 = 끝(어둠 + 심볼)
+  // 빛과 어둠은 보는 쪽에서 들어온다: 좌우로 비켜서면 가로로, 위아래로 비켜서면 세로로 지나감
+  // 주소 옵션: ?max=35 (좌우로 어둠이 다 차는 각도, 기본 30) / ?vmax=20 (위아래, 기본 25) / ?flip=1 (좌우 반대)
+  //            ?debug=1 (각도 눈금) / ?t=6.5 (시간 고정)
   const q = new URLSearchParams(location.search);
   const MAX_DEG = +q.get('max') || 30;
+  const MAX_V = +q.get('vmax') || 25;             // 위아래는 움직일 수 있는 폭이 좁아서 조금 작게
   const FLIP = q.get('flip') === '1';
   const DEBUG = q.get('debug') === '1';
   const FIXED_T = q.has('t') ? +q.get('t') : null;
@@ -248,7 +259,7 @@
     // 빛 타원: 0.3초 왼쪽 바깥의 작은 점 -> 4초 포스터 전체 (이후 그대로)
     cx: key(0.3, -0.35, 4.0, -0.24, 30, 75),
     rx: key(0.3, 0.05, 4.0, 1.62, 30, 75),
-    ry: key(0.3, 0.30 * A, 4.0, 1.30 * A, 30, 75),
+    ry: key(0.3, 0.30, 4.0, 1.30, 30, 75),        // 지나가는 방향의 수직 길이 대비
     fe: key(0.3, 0.3, 4.0, 0.7, 30, 75),
     hot: key(0.3, 0.05, 4.0, 1.2, 30, 75),
     stretch: key(0.0, 1.0, 7.7, 1.7, 75, 25),
@@ -266,12 +277,12 @@
   const scene = $('scene'), plane = $('motionPlane'), target = $('target');
   const goAR = $('goAR'), goWeb = $('goWeb'), start = $('start'), scan = $('scan'), pill = $('pill'), err = $('err');
   const THREE = AFRAME.THREE;
-  let mat = null, mode = null, tracking = false, shownT = T_LEFT, angle = -MAX_DEG, fadeRaf = 0;
+  let mat = null, mode = null, tracking = false, shownT = T_LEFT, ah = -MAX_DEG, av = 0, fadeRaf = 0;
 
   function setTime(t) {
     if (!mat) return;
     const u = mat.uniforms;
-    u.uLight.value.set(K.cx(t), 0.5 * A, K.rx(t), K.ry(t));
+    u.uLight.value.set(K.cx(t), 0.5, K.rx(t), K.ry(t));
     u.uLight2.value.set(K.fe(t), K.hot(t));
     u.uStretch.value = K.stretch(t); u.uSoft.value = K.soft(t); u.uDir.value = K.dir(t);
     u.uOcc.value = K.occ(t); u.uSymEdge.value = K.occ(t - 0.3);
@@ -293,7 +304,7 @@
         uniforms: {
           uPoster: { value: poster }, uSymbol: { value: symbol },
           uTexSize: { value: new THREE.Vector2(2120, 3000) }, uA: { value: A },
-          uLight: { value: new THREE.Vector4() }, uLight2: { value: new THREE.Vector2() },
+          uLight: { value: new THREE.Vector4() }, uLight2: { value: new THREE.Vector2() }, uSweep: { value: new THREE.Vector2(1, 0) },
           uStretch: { value: 1 }, uSoft: { value: 0 }, uDir: { value: 0 },
           uOcc: { value: -1 }, uSymEdge: { value: -1 }, uLevel: { value: 1 },
           uSymA: { value: 0 }, uTailA: { value: 0 }, uSymScale: { value: 1 },
@@ -323,46 +334,58 @@
     fadeRaf = requestAnimationFrame(step);
   }
 
-  function timeForAngle(deg) {
-    const u = Math.max(-1, Math.min(1, deg / MAX_DEG));
+  // 좌우(왼쪽 = 시작, 오른쪽 = 끝)와 위아래(위 = 시작, 아래 = 끝)를 합친 진행 정도 -1 ~ 1.
+  // 왼쪽 아래처럼 서로 반대인 대각선은 상쇄돼 밝은 쪽에 머문다
+  function progress(h, v) { return Math.max(-1, Math.min(1, h / MAX_DEG + v / MAX_V)); }
+  function timeFor(h, v) {
+    const u = progress(h, v);
     return u < 0 ? T_FRONT + u * (T_FRONT - T_LEFT) : T_FRONT + u * (T_RIGHT - T_FRONT);
   }
 
-  // AR: 포스터 기준 좌표에서 카메라 위치 -> 포스터 정면과 이루는 좌우 각도 (왼쪽에서 보면 음수)
+  // AR: 포스터 기준 좌표에서 카메라 위치 -> 포스터 정면과 이루는 좌우 / 위아래 각도 (왼쪽, 위에서 보면 음수)
   const inv = new THREE.Matrix4(), camPos = new THREE.Vector3();
   function arAngle() {
     target.object3D.updateMatrixWorld(true);
     $('cam').object3D.getWorldPosition(camPos);
     camPos.applyMatrix4(inv.copy(target.object3D.matrixWorld).invert());
-    return Math.atan2(camPos.x, camPos.z) * 180 / Math.PI;
+    return [Math.atan2(camPos.x, camPos.z) * 180 / Math.PI, -Math.atan2(camPos.y, camPos.z) * 180 / Math.PI];
   }
 
-  // 화면 보기: 휴대폰은 좌우 기울기, PC는 마우스(끌기) 위치
-  let webAngle = 0, tiltZero = null, usingTilt = false;
+  // 화면 보기: 휴대폰은 좌우·앞뒤 기울기, PC는 마우스(끌기) 위치
+  let webH = 0, webV = 0, tiltZero = null, usingTilt = false;
   function onTilt(e) {
-    if (e.gamma == null) return;
+    if (e.gamma == null || e.beta == null) return;
     usingTilt = true;
-    if (tiltZero === null) tiltZero = e.gamma;
-    webAngle = e.gamma - tiltZero;
+    if (tiltZero === null) tiltZero = [e.gamma, e.beta];
+    webH = e.gamma - tiltZero[0];
+    webV = tiltZero[1] - e.beta;                  // 윗변을 뒤로 젖히면 아래에서 올려다보는 것과 같음
   }
   function onPointer(e) {
     if (usingTilt) return;
-    webAngle = (e.clientX / innerWidth * 2 - 1) * MAX_DEG * 1.15;
+    webH = (e.clientX / innerWidth * 2 - 1) * MAX_DEG * 1.15;
+    webV = (e.clientY / innerHeight * 2 - 1) * MAX_V * 1.15;
   }
 
   let last = performance.now();
   function tick(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     if (tracking && mat) {
-      const raw = mode === 'ar' ? arAngle() : webAngle;
-      angle += ((FLIP ? -raw : raw) - angle) * (1 - Math.exp(-dt * 8));   // 흔들림 완화
-      const want = FIXED_T ?? timeForAngle(angle), step = MAX_SPEED * dt;
+      const [rh, rv] = mode === 'ar' ? arAngle() : [webH, webV];
+      const k = 1 - Math.exp(-dt * 8);                                     // 흔들림 완화
+      ah += ((FLIP ? -rh : rh) - ah) * k; av += (rv - av) * k;
+      const want = FIXED_T ?? timeFor(ah, av), step = MAX_SPEED * dt;
       shownT += Math.max(-step, Math.min(step, want - shownT));
       setTime(shownT);
-      if (mode === 'web') target.object3D.rotation.y = -angle * Math.PI / 180 * 0.35;   // 기울인 쪽으로 살짝 돌아 보임
+      // 빛·어둠이 지나가는 방향: 좌우로 비켜서면 가로, 위아래면 세로, 비스듬히면 그 사이 (정면 근처는 가로)
+      const sx = Math.abs(ah) / MAX_DEG + 0.02, sy = Math.abs(av) / MAX_V, n = Math.hypot(sx, sy);
+      mat.uniforms.uSweep.value.set(sx / n, sy / n);
+      if (mode === 'web') {                                                // 기울인 쪽으로 살짝 돌아 보임
+        target.object3D.rotation.y = -ah * Math.PI / 180 * 0.35;
+        target.object3D.rotation.x = -av * Math.PI / 180 * 0.35;
+      }
       if (DEBUG) {
-        $('meterVal').textContent = `${angle.toFixed(0)}° · ${shownT.toFixed(2)}s`;
-        $('meterKnob').style.left = `calc(${(Math.max(-1, Math.min(1, angle / MAX_DEG)) + 1) * 50}% - 1px)`;
+        $('meterVal').textContent = `좌우 ${ah.toFixed(0)}° · 위아래 ${av.toFixed(0)}° · ${shownT.toFixed(2)}s`;
+        $('meterKnob').style.left = `calc(${(progress(ah, av) + 1) * 50}% - 1px)`;
       }
     }
     requestAnimationFrame(tick);
@@ -371,10 +394,10 @@
 
   function onFound() {
     scan.hidden = true;
-    pill.innerHTML = mode === 'ar' ? '<b>포스터 인식됨</b> · 좌우로 비켜서 보세요'
-                                   : (usingTilt || matchMedia('(pointer: coarse)').matches ? '휴대폰을 좌우로 기울여 보세요' : '마우스를 좌우로 움직여 보세요');
+    pill.innerHTML = mode === 'ar' ? '<b>포스터 인식됨</b> · 좌우·위아래로 비켜서 보세요'
+                                   : (usingTilt || matchMedia('(pointer: coarse)').matches ? '휴대폰을 좌우·앞뒤로 기울여 보세요' : '마우스를 좌우·위아래로 움직여 보세요');
     pill.hidden = false;
-    if (!tracking && mode === 'ar') angle = arAngle();
+    if (!tracking && mode === 'ar') [ah, av] = arAngle();
     tracking = true;                               // 처음엔 어둠에서 지금 각도의 장면까지 빛이 번져 들어온다
     fadeTo(1, 350);
     setTimeout(() => { if (tracking) pill.hidden = true; }, 3000);

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>GLB 테스트</title>
-<!-- 접수용 GLB(모션포스터_AR_3D_빛과그림자_입체각도.glb)를 휴대폰에서 확인하는 페이지
+<!-- 접수용 GLB(모션포스터_AR_3D_최종.glb)를 휴대폰에서 확인하는 페이지
      화면: 손가락으로 돌려 각도별 문구 변화 확인, 시작 장면(한 번) -> 밝은 반복 순서 재생
      AR 보기: 안드로이드 = Scene Viewer / WebXR, 아이폰 = Quick Look. 벽에 붙여 놓음(ar-placement="wall")
      ※ AR 보기에서는 휴대폰 앱이 애니메이션을 정함(보통 0번 밝은 반복) -> 관리자 앱과 비슷한 상황 -->
@@ -39,6 +39,8 @@
   <div class="row"><b>재생</b>
     <button id="playIntro">시작 장면 → 밝은 반복</button>
     <button id="playLoop" class="on">밝은 반복만 (0번)</button>
+    <button class="playClip" data-clip="LightInOut_Loop_10s">빛 들어왔다 어두워짐 (2번)</button>
+    <button class="playClip" data-clip="AngleTour_Loop_10s">각도 둘러보기 (3번)</button>
     <span id="status"></span>
   </div>
   <div class="row"><b>보는 각도 (손가락으로 직접 돌려도 됨)</b>
@@ -59,15 +61,22 @@
   function playLoop() {
     mv.animationName = LOOP; mv.currentTime = 0; mv.play();
     status.textContent = '0번 밝은 반복';
-    setOn('[id^=play]', document.getElementById('playLoop'));
+    setOn('#panel .row:first-child button', document.getElementById('playLoop'));
   }
+  // 2번·3번: 이전 GLB 들의 움직임 (반복 재생)
+  document.querySelectorAll('.playClip').forEach((b) => b.onclick = () => {
+    cancelAnimationFrame(watch);
+    mv.animationName = b.dataset.clip; mv.currentTime = 0; mv.play();
+    status.textContent = b.textContent + ' 반복';
+    setOn('#panel .row:first-child button', b);
+  });
   // 시작 장면 끝(또는 처음으로 되감기는 순간)을 매 프레임 지켜보다가 밝은 반복으로 넘김 (시작 장면 끝 = 밝은 반복 첫 장면과 같아 끊김 없음)
   let watch = 0;
   function playIntro() {
     cancelAnimationFrame(watch);
     mv.animationName = INTRO; mv.currentTime = 0; mv.play();
     status.textContent = '1번 시작 장면 (한 번)';
-    setOn('[id^=play]', document.getElementById('playIntro'));
+    setOn('#panel .row:first-child button', document.getElementById('playIntro'));
     let prev = 0;
     const tick = () => {
       if (mv.animationName !== INTRO) return;
